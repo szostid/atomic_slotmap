@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use atomic_slotmap::{AtomicSlotMap, SlotGuard};
+use atomic_slotmap::{AtomicSlotMap, OwningSlotGuard, SlotGuard};
 use libfuzzer_sys::arbitrary::{self, Arbitrary};
 use libfuzzer_sys::fuzz_target;
 use slotmap::{DefaultKey, Key, KeyData};
@@ -59,6 +59,15 @@ pub enum Op {
     /// Removes a retained key.
     RemoveRetained(usize),
 
+    /// Retains a key that exists at the provided index. A
+    /// guard will be held for that key keeping it alive
+    /// until a [`Op::RemoveRetained`] removes it.
+    AddRetainedArc(Index),
+    /// Reads a retained key and compares its value.
+    ReadRetainedArc(usize),
+    /// Removes a retained key.
+    RemoveRetainedArc(usize),
+
     /// Checks that a key that came from the graveyard is still
     /// invalid.
     CheckGraveyard(usize),
@@ -109,6 +118,11 @@ struct RetainedKey<'a> {
     guard: SlotGuard<'a, DefaultKey, Value>,
 }
 
+struct ArcRetainedKey {
+    info: KeyInfo,
+    guard: OwningSlotGuard<DefaultKey, Value>,
+}
+
 static EXISTING_VALUE_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 struct Value(u32);
@@ -148,6 +162,7 @@ fn fuzz(data: Target) {
         handles.push(thread::spawn(move || {
             let mut private_keys = Vec::new();
             let mut retained_keys = Vec::new();
+            let mut atomic_retained_keys = Vec::new();
             let mut graveyard = Vec::new();
 
             for op in thread_ops {
@@ -181,7 +196,6 @@ fn fuzz(data: Target) {
                             retained_keys.push(RetainedKey { info, guard });
                         });
                     }
-
                     Op::ReadRetained(idx) => {
                         let idx = constrain_idx!(retained_keys, idx);
                         let info = &retained_keys[idx];
@@ -191,6 +205,31 @@ fn fuzz(data: Target) {
                     Op::RemoveRetained(idx) => {
                         let idx = constrain_idx!(retained_keys, idx);
                         let info = retained_keys.remove(idx);
+
+                        assert_eq!(info.guard.0, info.info.1);
+                    }
+
+                    Op::AddRetainedArc(idx) => {
+                        access_idx!(idx, private_keys, shared_keys, |idx, keys| {
+                            let info = keys[idx];
+
+                            let guard = map.get_owning(info.0).unwrap();
+
+                            assert_eq!(guard.0, info.1);
+
+                            atomic_retained_keys.push(ArcRetainedKey { info, guard });
+                        });
+                    }
+
+                    Op::ReadRetainedArc(idx) => {
+                        let idx = constrain_idx!(atomic_retained_keys, idx);
+                        let info = &atomic_retained_keys[idx];
+
+                        assert_eq!(info.guard.0, info.info.1);
+                    }
+                    Op::RemoveRetainedArc(idx) => {
+                        let idx = constrain_idx!(atomic_retained_keys, idx);
+                        let info = atomic_retained_keys.remove(idx);
 
                         assert_eq!(info.guard.0, info.info.1);
                     }

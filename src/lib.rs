@@ -43,6 +43,9 @@ use vec::AtomicVec;
 mod guard;
 pub use guard::SlotGuard;
 
+mod owning_guard;
+pub use owning_guard::OwningSlotGuard;
+
 mod slot;
 use slot::Slot;
 
@@ -545,6 +548,45 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
         }
 
         SlotGuard::new(key, self)
+    }
+
+    /// Returns a guard into the value corresponding to the key.
+    /// The guard has an `Arc` into the `AtomicSlotMap`, so it is
+    /// not tied to the slotmap by lifetime.
+    ///
+    /// Multiple guards can coexist at once. [`AtomicSlotMap::remove`]
+    /// calls won't invalidate such guards. In case the key gets removed
+    /// from the slotmap, the last existing [`SlotGuard`] will drop the
+    /// value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use atomic_slotmap::*;
+    /// # use std::sync::Arc;
+    ///    
+    /// let guard = {
+    ///     let sm = Arc::new(AtomicSlotMap::new());
+    ///     let key = sm.insert("bar");
+    ///     let guard = sm.get_owning(key);
+    ///
+    ///     assert_eq!(guard.as_deref(), Some(&"bar"));
+    ///
+    ///     guard
+    /// };
+    ///
+    /// // the slotmap is dropped, but the guard keeps an explicit
+    /// // reference to it, and so it is still accessible
+    /// assert_eq!(guard.as_deref(), Some(&"bar"));
+    /// ```
+    pub fn get_owning(self: &Arc<Self>, key: K) -> Option<OwningSlotGuard<K, V>> {
+        // if the key points to an unoccupied slot then
+        // it won't ever point to an occupied slot
+        if key.data().version().get() % 2 == 0 {
+            return None;
+        }
+
+        OwningSlotGuard::new(key, Arc::clone(self))
     }
 
     /// Pops an index from the free stack. The returned index is guaranteed
