@@ -27,7 +27,7 @@ use core::cell::UnsafeCell;
 use core::convert::Infallible;
 use core::fmt;
 use core::marker::PhantomData;
-use core::mem::{ManuallyDrop, MaybeUninit};
+use core::mem::MaybeUninit;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -38,11 +38,6 @@ use util::KeyDataRead as _;
 
 mod vec;
 use vec::AtomicVec;
-
-union SlotData<T> {
-    value: ManuallyDrop<MaybeUninit<T>>,
-    next_free: u32,
-}
 
 struct Slot<T> {
     /// The data contained within the slot.
@@ -55,7 +50,8 @@ struct Slot<T> {
     ///
     /// Otherwise, the `data` will contain [`SlotData::next_free`]
     /// only if is is reachable through [`AtomicSlotMap::free_head`]
-    data: UnsafeCell<SlotData<T>>,
+    data: UnsafeCell<MaybeUninit<T>>,
+    next_free: AtomicU32,
     /// Reference count. Includes the slotmap and all SlotGuards.
     ref_count: AtomicU32,
     version: AtomicU32,
@@ -70,7 +66,7 @@ impl<T> Slot<T> {
     /// - the slot is occupied. This means that it contains a value.
     /// - the slot is not occupied, but has a non-zero refcount. This
     ///   means that there are [`SlotGuard`]s pointing to it
-    fn data_ptr(&self) -> *mut SlotData<T> {
+    fn data_ptr(&self) -> *mut MaybeUninit<T> {
         self.data.get()
     }
 
@@ -99,7 +95,7 @@ impl<T> Slot<T> {
         // and it requires the value to be present.
         unsafe {
             let data = &mut *self.data_ptr();
-            core::ptr::drop_in_place(data.value.as_mut_ptr());
+            core::ptr::drop_in_place(data.as_mut_ptr());
         }
     }
 }
@@ -115,7 +111,7 @@ impl<T> Drop for Slot<T> {
             // so we own the value and it exists. We can read the data as
             // value because we know the slot is occupied.
             unsafe {
-                core::ptr::drop_in_place(data.value.as_mut_ptr());
+                core::ptr::drop_in_place(data.as_mut_ptr());
             }
         }
     }
@@ -194,7 +190,7 @@ impl<'a, K: Key, V> SlotGuard<'a, K, V> {
 
         // SAFETY: we know the reference count is non-zero and we know that
         // the slot is occupied, so its safe to read the value of the slot
-        let value = unsafe { (&mut *slot.data_ptr()).value.as_ptr() };
+        let value = unsafe { (*slot.data_ptr()).as_ptr() };
 
         Some(Self { key, value, map })
     }
@@ -628,11 +624,7 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
             // it was just popped out of free node indices (so its not in the
             // list of free nodes) and also it has an unoccupied version index
             // so forged keys won't be able to read its value
-            unsafe {
-                *slot.data_ptr() = SlotData {
-                    value: ManuallyDrop::new(MaybeUninit::new(value)),
-                }
-            };
+            unsafe { *slot.data_ptr() = MaybeUninit::new(value) };
 
             // we have exclusive access into slot so we can just write the value back
             slot.version.store(occupied_version, Ordering::Release);
@@ -660,11 +652,7 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
         // its not referred to the list of free nodes and also it has an
         // unoccupied version index so forged keys won't be able to read
         // its value
-        unsafe {
-            *slot.data_ptr() = SlotData {
-                value: ManuallyDrop::new(MaybeUninit::new(f(kd.into())?)),
-            }
-        }
+        unsafe { *slot.data_ptr() = MaybeUninit::new(f(kd.into())?) }
 
         slot.ref_count.store(1, Ordering::Release);
 
@@ -802,14 +790,7 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
             // SAFETY: If the index is in the free list, the slot must exist.
             let slot = unsafe { self.slots.get_unchecked(idx) };
 
-            // SAFETY: the `next_free` pointer is speculatively read assuming that
-            // nothing popped the slot from one of the free nodes too. if it was indeed
-            // popped, then we will read garbage data (first 4 bytes of `T` as a `u32`)
-            // but `u32` can store anything, nothing bad happens. in a while, we will try
-            // to exchange the old `free_head` with a new `free_head`. if it doesn't match,
-            // then this means that the node was indeed popped in the meanwhile and the
-            // data is garbage.
-            let next_free = unsafe { (*slot.data_ptr()).next_free };
+            let next_free = slot.next_free.load(Ordering::Acquire);
 
             // we construct a new free head which will point one index further.
             // the tag is incremented to prevent an ABA issue (look below)
@@ -858,11 +839,7 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
         loop {
             let (tag, old_next_free) = unpack_free_head(old_free_head);
 
-            // SAFETY: the safety clause asserts that the slot has no
-            // referants so we can safely write to its contents
-            unsafe {
-                (*slot.data_ptr()).next_free = old_next_free;
-            }
+            slot.next_free.store(old_next_free, Ordering::Release);
 
             // we increment the tag to prevent any potential ABA issues.
             // otherwise, `pop_free_index` calls would be unsound.
@@ -1094,7 +1071,7 @@ mod tests {
 
                 for i in 0..100 {
                     keys[i] = sm.insert_with_key(|_| {
-                        std::thread::sleep(Duration::from_millis(10));
+                        std::thread::sleep(Duration::from_millis(1));
                         i as u32
                     });
 
@@ -1117,7 +1094,7 @@ mod tests {
                 // we allocate 10 keys again
                 for i in 0..10 {
                     keys[i] = sm.insert_with_key(|_| {
-                        std::thread::sleep(Duration::from_millis(10));
+                        std::thread::sleep(Duration::from_millis(1));
                         i as u32
                     });
 
