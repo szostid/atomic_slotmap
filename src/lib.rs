@@ -692,40 +692,43 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     pub fn remove(&self, key: K) -> bool {
         let kd = key.data();
 
-        if let Some(slot) = self.slots.get(kd.idx()) {
-            let mut current_version = slot.version.load(Ordering::Acquire);
+        let Some(slot) = self.slots.get(kd.idx()) else {
+            return false;
+        };
 
-            // we enter a CAS loop to ensure that nothing marks this slot down
-            // to be dropped (by decrementing its reference count) concurrently.
-            // we also ensure the version matches whatever it is supposed to be.
-            loop {
-                // this means that the key is outdated
-                if current_version != kd.version().get() {
-                    return false;
-                }
+        let mut current_version = slot.version.load(Ordering::Acquire);
 
-                let unoccupied_version = current_version.wrapping_add(1);
-
-                match slot.version.compare_exchange(
-                    current_version,
-                    unoccupied_version,
-                    Ordering::Release,
-                    Ordering::Acquire,
-                ) {
-                    Ok(_) => break,
-                    Err(v) => current_version = v,
-                }
+        // we enter a CAS loop to ensure that nothing marks this slot down
+        // to be dropped (by decrementing its reference count) concurrently.
+        // we also ensure the version matches whatever it is supposed to be.
+        loop {
+            // this means that the key is outdated / got outdated (perhaps
+            // because of another .remove in parallel?)
+            if current_version != kd.version().get() {
+                return false;
             }
 
-            let ref_count = slot.ref_count.fetch_sub(1, Ordering::AcqRel);
+            let unoccupied_version = current_version.wrapping_add(1);
 
-            // we're the last reference to the slot. the slot had no locks acquired.
-            // we're responsible for dropping its inner value
-            if ref_count == 1 {
-                unsafe {
-                    slot.drop_inner_value();
-                    self.push_free_index(kd.idx());
-                }
+            match slot.version.compare_exchange(
+                current_version,
+                unoccupied_version,
+                Ordering::Release,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(v) => current_version = v,
+            }
+        }
+
+        let ref_count = slot.ref_count.fetch_sub(1, Ordering::AcqRel);
+
+        // we're the last reference to the slot. the slot had no locks acquired.
+        // we're responsible for dropping its inner value
+        if ref_count == 1 {
+            unsafe {
+                slot.drop_inner_value();
+                self.push_free_index(kd.idx());
             }
         }
 
