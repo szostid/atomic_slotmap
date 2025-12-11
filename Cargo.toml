@@ -1,0 +1,34 @@
+[package]
+name = "atomic_slotmap"
+version = "1.0.0"
+edition = "2018"
+authors = ["Dawid Szostak <szostid@gmail.com>"]
+description = "Atomic slotmap data structure"
+license = "Zlib"
+repository = "https://github.com/szostid/atomic_slotmap"
+readme = "README.md"
+keywords = [
+    "slotmap",
+    "storage",
+    "allocator",
+    "arena",
+    "reference",
+    "atomic",
+    "lockfree",
+]
+categories = ["data-structures", "memory-management", "caching"]
+rust-version = "1.58.0"
+
+[features]
+default = ["std"]
+unstable = []
+std = []
+
+[dependencies]
+slotmap = "1.1.1"
+
+[dev-dependencies]
+quickcheck = "1.0"
+
+[build-dependencies]
+version_check = "0.9"
