@@ -160,3 +160,18 @@ impl<K: Key, V> Drop for OwningSlotGuard<K, V> {
         }
     }
 }
+
+impl<K: Key, V> Clone for OwningSlotGuard<K, V> {
+    fn clone(&self) -> Self {
+        // SAFETY: We know the slot is valid and 'alive' because 'self' exists
+        // and holds a strong reference (ref_count >= 1).
+        // Therefore, it is impossible for the ref_count to be 0 here.
+        self.slot().ref_count.fetch_add(1, Ordering::Relaxed);
+
+        Self {
+            value: self.value,
+            key: self.key,
+            map: self.map.clone(),
+        }
+    }
+}
