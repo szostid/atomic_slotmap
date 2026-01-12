@@ -78,6 +78,13 @@ impl<'a, K: Key, V> SlotGuard<'a, K, V> {
         Some(Self { key, value, map })
     }
 
+    /// Returns the key of the value that this slot guard guards.
+    #[inline]
+    #[must_use]
+    pub fn key(&self) -> K {
+        self.key
+    }
+
     /// Returns the reference to the slot that this [`SlotGuard`] points to.
     fn slot(&self) -> &Slot<V> {
         // SAFETY: an AtomicVec (self.map.slots) cannot pop elements so once a
