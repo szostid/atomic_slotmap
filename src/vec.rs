@@ -16,7 +16,7 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 ///   the value because another thread could claim it
 ///   and start writing to it.
 pub struct AtomicVec<T> {
-    chunks: [AtomicPtr<T>; 32],
+    chunks: [AtomicPtr<T>; 15],
     len: AtomicU32,
 }
 
@@ -25,7 +25,7 @@ impl<T> AtomicVec<T> {
     #[inline]
     #[must_use]
     pub fn new() -> Self {
-        // equivalent to [AtomicPtr::new(ptr::null_mut()); 32] but AtomicPtr does not implement copy
+        // equivalent to [AtomicPtr::new(ptr::null_mut()); 15] but AtomicPtr does not implement copy
         let chunks = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
 
         Self {
@@ -157,7 +157,7 @@ impl<T> AtomicVec<T> {
             // newly initialized chunk
             let ptr = chunk.load(Ordering::Relaxed);
             if !ptr.is_null() {
-                total_cap += 1 << i;
+                total_cap += 32_usize << (i * 2);
             } else {
                 // chunks are allocated in order, so if we see the first
                 // null value then all consecutive chunks are null
@@ -181,10 +181,39 @@ impl<T> AtomicVec<T> {
     /// Returns the `(chunk, offset)` of the given index.
     #[inline]
     fn get_location(&self, idx: u32) -> (usize, usize) {
-        let pos = (idx as usize) + 1;
-        let chunk_idx = (usize::BITS - 1) as usize - pos.leading_zeros() as usize;
-        let base = 1 << chunk_idx;
-        let offset = pos - base;
+        // We want to map `idx` to a chunk `k` where sizes grow as 32 * 4^k.
+        // The cumulative capacity before chunk k is: Sum(32 * 4^i) = 32 * (4^k - 1) / 3
+        // We solve for k:
+        // 32 * (4^k - 1) / 3 <= idx
+        // 4^k <= (3 * idx / 32) + 1
+        // 2k <= log2((3 * idx / 32) + 1)
+
+        let val = (3 * (idx as u64) / 32) + 1;
+        let log2 = 63 - val.leading_zeros();
+        let chunk_idx = (log2 / 2) as usize;
+
+        // These are the start indices of subsequent chunks
+        const STARTS: [u32; 15] = [
+            0,          // size: 32,         starts at 0
+            32,         // size: 128,        starts at 32         + 0         = 32
+            160,        // size: 512,        starts at 128        + 32        = 160
+            672,        // size: 2048,       starts at 512        + 160       = 672
+            2720,       // size: 8192,       starts at 2048       + 672       = 2720
+            10912,      // size: 32768,      starts at 8192       + 2720      = 10912
+            43680,      // size: 131072,     starts at 32768      + 10912     = 43680
+            174752,     // size: 524288,     starts at 131072     + 43680     = 174752
+            699040,     // size: 2097152,    starts at 524288     + 174752    = 699040
+            2796192,    // size: 8388608,    starts at 2097152    + 699040    = 2796192
+            11184800,   // size: 33554432,   starts at 8388608    + 2796192   = 11184800
+            44739232,   // size: 134217728,  starts at 33554432   + 11184800  = 44739232
+            178956960,  // size: 536870912,  starts at 134217728  + 44739232  = 178956960
+            715827872,  // size: 2147483648, starts at 536870912  + 178956960 = 715827872
+            2863311520, // size: 8589934592, starts at 2147483648 + 715827872 = 2863311520
+        ];
+
+        let start = unsafe { *STARTS.get_unchecked(chunk_idx) };
+        let offset = (idx - start) as usize;
+
         (chunk_idx, offset)
     }
 
@@ -197,7 +226,7 @@ impl<T> AtomicVec<T> {
             return ptr;
         }
 
-        let cap = 1 << chunk_idx;
+        let cap = 32_usize << (chunk_idx * 2);
         let layout = alloc::Layout::array::<T>(cap).unwrap();
 
         unsafe {
@@ -263,7 +292,7 @@ impl<T> Drop for AtomicVec<T> {
             let ptr = *chunk.get_mut();
 
             if !ptr.is_null() {
-                let cap = 1 << i;
+                let cap = 32_usize << (i * 2);
                 let layout = alloc::Layout::array::<T>(cap).unwrap();
 
                 unsafe {

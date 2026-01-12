@@ -157,10 +157,8 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     /// let hello = messages.insert("Hello");
     /// let bye = messages.insert("Bye");
     ///
-    /// // AtomicHashMap allocates chunks of powers of two. It will
-    /// // allocate as many chunks as needed to fit the specified
-    /// // amount of elements.
-    /// assert_eq!(messages.capacity(), 1 + 2 + 4);
+    /// // AtomicHashMap allocates chunks starting from `32` and then scales by 4
+    /// assert_eq!(messages.capacity(), 32);
     /// ```
     pub fn with_capacity_and_key(capacity: usize) -> Self {
         Self {
@@ -229,9 +227,9 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     ///
     /// ```
     /// # use atomic_slotmap::*;
-    /// let sm: AtomicSlotMap<_, f64> = AtomicSlotMap::with_capacity(10);
+    /// let sm: AtomicSlotMap<_, f64> = AtomicSlotMap::with_capacity(50);
     ///
-    /// assert_eq!(sm.capacity(), 1 + 2 + 4 + 8);
+    /// assert_eq!(sm.capacity(), 32 + 128);
     /// ```
     pub fn capacity(&self) -> usize {
         self.slots.capacity()
