@@ -166,3 +166,13 @@ impl<K: Key, V> Drop for SlotGuard<'_, K, V> {
         }
     }
 }
+
+// SAFETY: SlotGuard behaves exactly like Arc<T>. It's send whenever the elements
+// within are Send + Sync. It doesn't derive the trait automatically only because
+// of the `*const V` that's within, but that doesn't change anything
+unsafe impl<K: Send + Sync + Key, V: Send + Sync> Send for SlotGuard<'_, K, V> {}
+
+// SAFETY: SlotGuard behaves exactly like Arc<T>. It's sync whenever the elements
+// within are Send + Sync. It doesn't derive the trait automatically only because
+// of the `*const V` that's within, but that doesn't change anything
+unsafe impl<K: Send + Sync + Key, V: Send + Sync> Sync for SlotGuard<'_, K, V> {}

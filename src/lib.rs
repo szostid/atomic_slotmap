@@ -686,6 +686,14 @@ mod tests {
 
     use super::*;
 
+    const _: () = {
+        const fn f<T: Send + Sync>() {}
+
+        f::<AtomicSlotMap<DefaultKey, u32>>();
+        f::<SlotGuard<DefaultKey, u32>>();
+        f::<OwningSlotGuard<DefaultKey, u32>>();
+    };
+
     #[derive(Clone)]
     struct CountDrop<'a>(&'a std::cell::RefCell<usize>);
 
