@@ -46,6 +46,9 @@ pub use owning_guard::OwningSlotGuard;
 mod slot;
 use slot::Slot;
 
+mod iter;
+pub use iter::LossyIter;
+
 const SENTINEL: u32 = u32::MAX;
 
 /// Creates a packed `free_head` from a tag and index
@@ -664,6 +667,14 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
                 Err(current) => old_free_head = current,
             }
         }
+    }
+
+    /// Returns a lossy iterator over the currently occupied slots.
+    ///
+    /// This iterator does not guarantee it will visit every element if concurrent
+    /// insertions or removals are happening.
+    pub fn lossy_iter(&self) -> LossyIter<'_, K, V> {
+        LossyIter::new(self)
     }
 }
 
