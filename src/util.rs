@@ -1,6 +1,5 @@
-//! Utilities for manupulating the [`slotmap::KeyData`] which is `pub(in slotmap)`.
+//! Utilities for manipulating the [`slotmap::KeyData`] which is `pub(in slotmap)`.
 use core::num::NonZeroU32;
-
 use slotmap::KeyData;
 
 /// Extension trait for reading [`slotmap::KeyData`]

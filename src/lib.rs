@@ -24,12 +24,9 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
-use core::cell::UnsafeCell;
 use core::convert::Infallible;
-use core::fmt;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
-use core::ops::Deref;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use slotmap::{DefaultKey, Key, KeyData};
@@ -77,7 +74,7 @@ fn unpack_free_head(packed: u64) -> (u32, u32) {
 #[allow(missing_debug_implementations)]
 pub struct AtomicSlotMap<K: Key, V> {
     slots: AtomicVec<Slot<V>>,
-    /// `free_head` is packed using [`pack`] and contains
+    /// `free_head` is packed using [`pack_free_head`] and contains
     /// an operation index and free head index. Operation
     /// index is incremented during any operation which
     /// modified `free_head`, and it is used to prevent ABA

@@ -1,4 +1,9 @@
-use super::*;
+use crate::{util::KeyDataRead as _, AtomicSlotMap, Slot};
+use alloc::fmt;
+use alloc::sync::Arc;
+use core::ops::Deref;
+use core::sync::atomic::Ordering;
+use slotmap::Key;
 
 /// A guard into a slot of a [`AtomicSlotMap`] which has an `Arc` into it
 /// (meaning that it isn't tied to the slotmap by lifetime)

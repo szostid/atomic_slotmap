@@ -1,4 +1,6 @@
-use super::*;
+use core::cell::UnsafeCell;
+use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 pub struct Slot<T> {
     /// The data contained within the slot.
