@@ -30,6 +30,7 @@ slotmap = "^1"
 [dev-dependencies]
 quickcheck = "1.0"
 criterion = "0.5"
+parking_lot = "0.12"
 
 [build-dependencies]
 version_check = "0.9"
