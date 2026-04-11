@@ -357,7 +357,7 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     /// value will be stored is passed into `f`. This is useful to store values
     /// that contain their own key.
     ///
-    /// If `f` returns `Err`, this method returns the error. The slotmap is untouched.
+    /// If `f` returns `Err`, no element is inserted.
     ///
     /// # Panics
     ///
@@ -377,58 +377,51 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     where
         F: FnOnce(K) -> Result<V, E>,
     {
-        if let Some(slot_idx) = self.pop_free_index() {
+        let (slot_idx, cur_version) = if let Some(slot_idx) = self.pop_free_index() {
             let slot = unsafe { self.slots.get_unchecked(slot_idx) };
+            let version = slot.version.load(Ordering::Acquire);
+            (slot_idx, version)
+        } else {
+            // SAFETY: the zeroed representation of `Slot<T>` is perfectly fine to read.
+            // `value` is `UnsafeCell::new(MaybeUninit::uninit())` which is perfectly okay,
+            // and both `ref_count` and `version` are initialized to zero, which is exactly
+            // what we want. Such slot, when read, will have a version-count of zero, which
+            // means that it is unoccupied, and therefore inaccessible to any calls which
+            // try to use a forged key to access it.
+            let pushed_index = unsafe { self.slots.push_zeroed() };
+            (pushed_index, 0)
+        };
 
-            let occupied_version = slot.version.load(Ordering::Acquire) | 1;
+        debug_assert_eq!(cur_version & 1, 0, "target slot is occupied");
 
-            // only referenced by the slotmap
-            slot.ref_count.store(1, Ordering::Release);
+        let occupied_version = cur_version | 1;
 
-            let kd = KeyData::new(slot_idx, occupied_version);
+        let kd = KeyData::new(slot_idx, occupied_version);
 
-            // Get value first in case f panics or returns an error.
-            let value = f(kd.into())?;
+        // Get value first in case f panics or returns an error.
+        let value = match f(kd.into()) {
+            Ok(value) => value,
+            Err(err) => {
+                // SAFETY: the slot was just popped from the free list or is a fresh slot,
+                // and is still unoccupied with no referents.
+                unsafe { self.push_free_index(slot_idx) };
+                return Err(err);
+            }
+        };
 
-            // SAFETY: we have exclusive access to all the free slots because
-            // it was just popped out of free node indices (so its not in the
-            // list of free nodes) and also it has an unoccupied version index
-            // so forged keys won't be able to read its value
-            unsafe { *slot.data_ptr() = MaybeUninit::new(value) };
-
-            // we have exclusive access into slot so we can just write the value back
-            slot.version.store(occupied_version, Ordering::Release);
-
-            self.num_elems.fetch_add(1, Ordering::Release);
-
-            return Ok(kd.into());
-        }
-
-        let version = 1;
-
-        // SAFETY: the zeroed representation of `Slot<T>` is perfectly fine to read.
-        // `value` is `UnsafeCell::new(MaybeUninit::uninit())` which is perfectly okay,
-        // and both `ref_count` and `version` are initialized to zero, which is exactly
-        // what we want. Such slot, when read, will have a version-count of zero, which
-        // means that it is unoccupied, and therefore inaccessible to any calls which
-        // try to use a forged key to access it.
-        let pushed_index = unsafe { self.slots.push_zeroed() };
-
-        let kd = KeyData::new(pushed_index, version);
-
-        let slot = unsafe { self.slots.get_unchecked(pushed_index) };
+        let slot = unsafe { self.slots.get_unchecked(slot_idx) };
 
         // SAFETY: we have exclusive access to all the free slots because
-        // its not referred to the list of free nodes and also it has an
-        // unoccupied version index so forged keys won't be able to read
-        // its value
-        unsafe { *slot.data_ptr() = MaybeUninit::new(f(kd.into())?) }
+        // it was just popped out of free node indices (so its not in the
+        // list of free nodes) and also it has an unoccupied version index
+        // so forged keys won't be able to read its value
+        unsafe { *slot.data_ptr() = MaybeUninit::new(value) };
 
+        // only referenced by the slotmap
         slot.ref_count.store(1, Ordering::Release);
 
-        // we only increment the version (mark the slot occupied) after
-        // intializing it with a value
-        slot.version.fetch_add(1, Ordering::Release);
+        // we have exclusive access into slot so we can just write the value back
+        slot.version.store(occupied_version, Ordering::Release);
 
         self.num_elems.fetch_add(1, Ordering::Release);
 
@@ -491,11 +484,11 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
             }
         }
 
-        let ref_count = slot.ref_count.fetch_sub(1, Ordering::AcqRel);
+        let needs_drop = slot.dec_ref_count();
 
         // we're the last reference to the slot. the slot had no locks acquired.
         // we're responsible for dropping its inner value
-        if ref_count == 1 {
+        if needs_drop {
             unsafe {
                 slot.drop_inner_value();
                 self.push_free_index(kd.idx());
@@ -767,6 +760,42 @@ mod tests {
         drop(guard2);
 
         assert_eq!(*drops.borrow(), 1);
+    }
+
+    #[test]
+    fn try_insert_err_keeps_fresh_slot_reusable() {
+        use slotmap::Key as _;
+
+        let sm = AtomicSlotMap::new();
+
+        assert!(sm.try_insert_with_key::<_, ()>(|_| Err(())).is_err());
+        assert_eq!(sm.len(), 0);
+
+        let key = sm.insert(123_u32);
+
+        // The freshly allocated slot should be recycled after the failed insert.
+        let idx = key.data().as_ffi() as u32;
+        assert_eq!(idx, 0);
+        assert_eq!(sm.get(key).as_deref(), Some(&123));
+    }
+
+    #[test]
+    fn try_insert_err_keeps_reused_slot_reusable() {
+        use slotmap::Key as _;
+
+        let sm = AtomicSlotMap::new();
+        let key = sm.insert(1_u32);
+        let idx = key.data().as_ffi() as u32;
+
+        assert!(sm.remove(key));
+        assert!(sm.try_insert_with_key::<_, ()>(|_| Err(())).is_err());
+        assert_eq!(sm.len(), 0);
+
+        let key2 = sm.insert(2_u32);
+        let idx2 = key2.data().as_ffi() as u32;
+
+        assert_eq!(idx2, idx);
+        assert_eq!(sm.get(key2).as_deref(), Some(&2));
     }
 
     quickcheck! {
