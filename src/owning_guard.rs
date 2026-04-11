@@ -2,7 +2,6 @@ use crate::{util::KeyDataRead as _, AtomicSlotMap, Slot};
 use alloc::fmt;
 use alloc::sync::Arc;
 use core::ops::Deref;
-use core::sync::atomic::Ordering;
 use slotmap::Key;
 
 /// A guard into a slot of a [`AtomicSlotMap`] which has an `Arc` into it
@@ -26,50 +25,18 @@ impl<K: Key, V> OwningSlotGuard<K, V> {
         let kd = key.data();
         let slot = map.slots.get(kd.idx())?;
 
-        let v_start = slot.version.load(Ordering::Acquire);
-
-        if v_start != kd.version().get() {
-            return None;
-        }
-
-        // we cannot fetch_add, because once the reference count drops to zero,
-        // it **must** stay there - otherwise, when dropping, two locks could see
-        // a reference count of 1 thinking that they are supposed to drop the value.
-        // we need to check if the reference count was possibly zero, compute the
-        // new value, try to exchange it, and if it did changed, then we have to try
-        // again. otherwise we're fine
-        let mut count = slot.ref_count.load(Ordering::Relaxed);
-        loop {
-            if count == 0 {
-                return None;
-            }
-
-            match slot.ref_count.compare_exchange_weak(
-                count,
-                count + 1,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(c) => count = c,
-            }
-        }
-
-        // we need to validate that the slot version is still what we expect it
-        // to be. while it wouldn't be that big of a deal if the slot got marked
-        // for removal in the meanwhile, it would be a HUGE deal if after the version
-        // check but before the reference count check the slot was marked for removal,
-        // deallocated and reused (which is extremely unlikely, but whatever). the
-        // reference count would never be read as zero, but the slot would
-        // contain a totally different version then expected. if that happens, then
-        // we need to drop the value that was inside of the slot.
-        if slot.version.load(Ordering::Acquire) != kd.version().get() {
-            let ref_count = slot.ref_count.fetch_sub(1, Ordering::AcqRel);
-
-            // we're the last user of this slot value that we don't care about anyways
-            if ref_count == 1 {
+        if let Err(needs_drop) = slot.acquire_guard(kd.version().get()) {
+            if needs_drop {
+                // SAFETY: dec_ref_count assures this is safe, because the
+                // value needs drop.
                 unsafe {
                     slot.drop_inner_value();
+                }
+
+                // SAFETY: dec_ref_count assures this is safe, because the
+                // value needs drop. we know this is a valid index into the
+                // slotmap, because it was valid when we created the SlotGuard.
+                unsafe {
                     map.push_free_index(kd.idx());
                 }
             }
@@ -92,21 +59,20 @@ impl<K: Key, V> OwningSlotGuard<K, V> {
     }
 
     /// Returns the reference to the slot that this [`SlotGuard`] points to.
+    ///
+    /// # Safety
+    /// The slotguard must exist and must not be actively being dropped. This
+    /// ensures that the slot is kept alive by this guard.
     fn slot(&self) -> &Slot<V> {
-        // SAFETY: an AtomicVec (self.map.slots) cannot pop elements so once a
-        // valid index into it exists, it will keep on existing. additionally, we
-        // know that this `SlotGuard` indeed exists, so there's even a guarantee
-        // that tells us that the slot won't be modified while this guard exists
+        // SAFETY: the value is safe to read as long as the slotguard exists and is not being dropped
         unsafe { self.map.slots.get_unchecked(self.key.data().idx()) }
     }
 
     /// Returns the value that the slot points to.
     ///
     /// # Safety
-    /// When calling this method, you have to ensure that the returned reference
-    /// will not overlap with any mutable usages. This means that the refcount
-    /// of the `SlotGuard` must be non-zero in order for this to exists. This will
-    /// be true everywhere except in `drop`
+    /// The slotguard must exist and must not be actively being dropped. This
+    /// ensures that the slot is kept alive by this guard.
     unsafe fn value(&self) -> &V {
         // SAFETY: the value is safe to read as long as the slotguard exists and is not being dropped
         unsafe { &*self.value }
@@ -153,19 +119,19 @@ impl<K: Key, V> AsRef<V> for OwningSlotGuard<K, V> {
 
 impl<K: Key, V> Drop for OwningSlotGuard<K, V> {
     fn drop(&mut self) {
-        let ref_count = self.slot().ref_count.fetch_sub(1, Ordering::AcqRel);
+        let needs_drop = self.slot().dec_ref_count();
 
         // we're the last user, we have to drop the value
-        if ref_count == 1 {
-            // SAFETY: we know the refcount == 0, so nothing refers and
-            // tries to read the value of the slotguard at this point
+        if needs_drop {
+            // SAFETY: dec_ref_count assures this is safe, because the
+            // value needs drop.
             unsafe {
                 self.slot().drop_inner_value();
             }
 
-            // SAFETY: we know this is a valid index into the slotmap,
-            // because it was valid when we created the SlotGuard.
-            // we're the last referant to this slot because ref_count == 1.
+            // SAFETY: dec_ref_count assures this is safe, because the
+            // value needs drop. we know this is a valid index into the
+            // slotmap, because it was valid when we created the SlotGuard.
             unsafe {
                 self.map.push_free_index(self.key.data().idx());
             }
@@ -175,10 +141,7 @@ impl<K: Key, V> Drop for OwningSlotGuard<K, V> {
 
 impl<K: Key, V> Clone for OwningSlotGuard<K, V> {
     fn clone(&self) -> Self {
-        // SAFETY: We know the slot is valid and 'alive' because 'self' exists
-        // and holds a strong reference (ref_count >= 1).
-        // Therefore, it is impossible for the ref_count to be 0 here.
-        self.slot().ref_count.fetch_add(1, Ordering::Relaxed);
+        self.slot().inc_ref_count_for_clone();
 
         Self {
             value: self.value,
