@@ -373,8 +373,6 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
             (pushed_index, 0)
         };
 
-        debug_assert_eq!(cur_version & 1, 0, "target slot is occupied");
-
         let occupied_version = cur_version | 1;
 
         let kd = KeyData::new(slot_idx, occupied_version);
@@ -392,10 +390,11 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
 
         let slot = unsafe { self.slots.get_unchecked(slot_idx) };
 
-        // SAFETY: we have exclusive access to all the free slots because
-        // it was just popped out of free node indices (so its not in the
-        // list of free nodes) and also it has an unoccupied version index
-        // so forged keys won't be able to read its value
+        slot.debug_assert_exclusively_owned();
+
+        // SAFETY: we have exclusive access to the slot because we've just
+        // popped it off the free list. the slot is exclusively owned, we
+        // can write the data into it
         unsafe { *slot.data_ptr() = MaybeUninit::new(value) };
 
         // only referenced by the slotmap
@@ -604,7 +603,10 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Some(idx),
+                Ok(_) => {
+                    slot.debug_assert_exclusively_owned();
+                    return Some(idx);
+                }
                 Err(current) => old_free_head = current,
             }
         }
@@ -620,6 +622,9 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     /// the index must be unoccupied and have no referents.
     unsafe fn push_free_index(&self, idx: u32) {
         let slot = unsafe { self.slots.get_unchecked(idx) };
+
+        slot.debug_assert_exclusively_owned();
+
         let mut old_free_head = self.free_head.load(Ordering::Relaxed);
 
         loop {

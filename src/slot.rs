@@ -13,7 +13,9 @@ const MAX_REFCOUNT: u32 = 0xFFFFFF00;
 /// The refererence count of the slot strictly determines the ownership.
 ///
 /// If the slot has no references, it is safe to write, assuming that it cannot
-/// be reached through other means (mainly the free list of the slot map).
+/// be reached through other means (mainly the free list of the slot map. i.e.
+/// if you pop a slot off the free list then it isn't there and it will have
+/// a zeroed refcount so its safe to write).
 pub struct Slot<T> {
     pub(crate) data: UnsafeCell<MaybeUninit<T>>,
     /// The index of the next free slot in the linked list of free
@@ -50,10 +52,10 @@ impl<T> Slot<T> {
     /// and marked for removal
     #[inline]
     pub(crate) fn acquire_guard(&self, expected_version: u32) -> Result<(), bool> {
-        // fail-fast if the slot is outdated
-        if self.version.load(Ordering::Acquire) != expected_version {
-            return Err(false);
-        }
+        // note: we could add a fail fast and check the expected_version right away,
+        // but that would speed up the failure path and slow down the fast path
+        // (valid handles would have to fetch the version unnecessarily), the version
+        // is checked after the CAS loop anyways
 
         let mut refcount = self.ref_count.load(Ordering::Relaxed);
 
@@ -79,26 +81,17 @@ impl<T> Slot<T> {
                 Ordering::Relaxed,
             ) {
                 Ok(_) => break,
-                Err(c) => refcount = c,
+                Err(cur_refcount) => refcount = cur_refcount,
             }
         }
 
-        // we need to validate that the slot version is still what we expect it
-        // to be. while it wouldn't be that big of a deal if the slot got marked
-        // for removal in the meanwhile, it would be a HUGE deal if after the version
-        // check but before the reference count check the slot was marked for removal,
-        // deallocated and reused (which is extremely unlikely, but possible). the
-        // reference count would never be read as zero, but the slot would
-        // contain a totally different version then expected. if that happens, then
-        // we need to drop the value that was inside of the slot.
         if self.version.load(Ordering::Acquire) == expected_version {
             return Ok(());
         }
 
-        // we failed to acquire the lock because it got marked for removal, deallocated and
-        // reused. we don't want this lock - we decrement the ref count, but its possible
-        // that we're actually the last referrant now, and in that case we need to deallocate
-        // the contents of the slot
+        // either the slot had an outdated version from the get-go or it got marked for removal
+        // dropped reallocated and reused. either way, we've gotten a lock onto the slot but its
+        // not what we want it to be, so we drop the reference
         let needs_drop = self.dec_ref_count();
 
         Err(needs_drop)
@@ -146,6 +139,17 @@ impl<T> Slot<T> {
     #[inline]
     #[track_caller]
     pub(crate) unsafe fn drop_inner_value(&self) {
+        // SAFETY: the safety clause requires exclusive access to the slot,
+        // and it requires the value to be present.
+        unsafe {
+            let data = &mut *self.data_ptr();
+            core::ptr::drop_in_place(data.as_mut_ptr());
+        }
+    }
+
+    #[inline]
+    #[track_caller]
+    pub(crate) fn debug_assert_exclusively_owned(&self) {
         debug_assert_eq!(
             self.ref_count.load(Ordering::Acquire),
             0,
@@ -157,13 +161,6 @@ impl<T> Slot<T> {
             0,
             "Slot::drop_inner_value called on an occupied slot"
         );
-
-        // SAFETY: the safety clause requires exclusive access to the slot,
-        // and it requires the value to be present.
-        unsafe {
-            let data = &mut *self.data_ptr();
-            core::ptr::drop_in_place(data.as_mut_ptr());
-        }
     }
 }
 
