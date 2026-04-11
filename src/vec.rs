@@ -1,5 +1,9 @@
 use alloc::alloc;
+
+#[cfg(not(loom))]
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+#[cfg(loom)]
+use loom::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 /// An atomic vector.
 ///
@@ -272,10 +276,10 @@ impl<T> Drop for AtomicVec<T> {
         // drop all elements, then deallocate all chunks
 
         if core::mem::needs_drop::<T>() {
-            for i in 0..*self.len.get_mut() {
+            for i in 0..self.len.load(Ordering::Relaxed) {
                 let (chunk_idx, offset) = self.get_location(i);
 
-                let chunk_ptr = *self.chunks[chunk_idx].get_mut();
+                let chunk_ptr = self.chunks[chunk_idx].load(Ordering::Relaxed);
 
                 // its possible for chunk_ptr to be null if a thread
                 // has panicked when allocating the chunk.
@@ -288,8 +292,8 @@ impl<T> Drop for AtomicVec<T> {
             }
         }
 
-        for (i, chunk) in self.chunks.iter_mut().enumerate() {
-            let ptr = *chunk.get_mut();
+        for (i, chunk) in self.chunks.iter().enumerate() {
+            let ptr = chunk.load(Ordering::Relaxed);
 
             if !ptr.is_null() {
                 let cap = 32_usize << (i * 2);

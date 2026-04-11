@@ -1,6 +1,11 @@
 use crate::{util::KeyDataRead as _, AtomicSlotMap, Slot};
 use alloc::fmt;
+
+#[cfg(not(loom))]
 use alloc::sync::Arc;
+#[cfg(loom)]
+use loom::sync::Arc;
+
 use core::ops::Deref;
 use slotmap::Key;
 

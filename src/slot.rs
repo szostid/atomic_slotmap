@@ -1,6 +1,14 @@
-use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
+
+#[cfg(not(loom))]
 use core::sync::atomic::{fence, AtomicU32, Ordering};
+#[cfg(loom)]
+use loom::sync::atomic::{fence, AtomicU32, Ordering};
+
+#[cfg(not(loom))]
+use core::cell::UnsafeCell;
+#[cfg(loom)]
+use loom::cell::UnsafeCell;
 
 /// Similar to [`std::sync::Arc`], the Slot has a maximum reference
 /// count cap to prevent leaked references from overflowing the
@@ -40,7 +48,10 @@ impl<T> Slot<T> {
     /// (the exact requirements are explained in the [`Slot`]s
     /// documentation).
     pub(crate) fn data_ptr(&self) -> *mut MaybeUninit<T> {
-        self.data.get()
+        #[cfg(not(loom))]
+        return self.data.get();
+        #[cfg(loom)]
+        return self.data.with_mut(|ptr| ptr);
     }
 
     /// Tried to acquire a guard for this slot, expecting it to have the version
@@ -168,7 +179,7 @@ impl<T> Drop for Slot<T> {
     fn drop(&mut self) {
         // we have exclusive ownership of the slot, we know the slotmap
         // is being dropped so there are no guards pointing to it
-        if core::mem::needs_drop::<T>() && (*self.version.get_mut() % 2 == 1) {
+        if core::mem::needs_drop::<T>() && (self.version.load(Ordering::Relaxed) % 2 == 1) {
             // SAFETY: we have a mutable reference to the slot, so we have
             // a guarantee of exclusive ownership, and the version is odd so
             // there's a value contained within the slot

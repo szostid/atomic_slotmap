@@ -23,11 +23,19 @@
 
 extern crate alloc;
 
-use alloc::sync::Arc;
 use core::convert::Infallible;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
+
+#[cfg(not(loom))]
+use alloc::sync::Arc;
+#[cfg(loom)]
+use loom::sync::Arc;
+
+#[cfg(not(loom))]
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+#[cfg(loom)]
+use loom::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use slotmap::{DefaultKey, Key, KeyData};
 
@@ -550,6 +558,7 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     /// // reference to it, and so it is still accessible
     /// assert_eq!(guard.as_deref(), Some(&"bar"));
     /// ```
+    #[cfg(not(loom))]
     pub fn get_owning(self: &Arc<Self>, key: K) -> Option<OwningSlotGuard<K, V>> {
         // if the key points to an unoccupied slot then
         // it won't ever point to an occupied slot
@@ -558,6 +567,17 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
         }
 
         OwningSlotGuard::new(key, Arc::clone(self))
+    }
+
+    #[cfg(loom)]
+    pub fn get_owning(this: &Arc<Self>, key: K) -> Option<OwningSlotGuard<K, V>> {
+        // if the key points to an unoccupied slot then
+        // it won't ever point to an occupied slot
+        if key.data().version().get() % 2 == 0 {
+            return None;
+        }
+
+        OwningSlotGuard::new(key, Arc::clone(this))
     }
 
     /// Pops an index from the free slot linked list. The returned index is guaranteed
