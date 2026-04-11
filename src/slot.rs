@@ -1,14 +1,6 @@
+use crate::atomic::{fence, AtomicU32, Ordering};
+use crate::UnsafeCell;
 use core::mem::MaybeUninit;
-
-#[cfg(not(loom))]
-use core::sync::atomic::{fence, AtomicU32, Ordering};
-#[cfg(loom)]
-use loom::sync::atomic::{fence, AtomicU32, Ordering};
-
-#[cfg(not(loom))]
-use core::cell::UnsafeCell;
-#[cfg(loom)]
-use loom::cell::UnsafeCell;
 
 /// Similar to [`std::sync::Arc`], the Slot has a maximum reference
 /// count cap to prevent leaked references from overflowing the
@@ -51,7 +43,7 @@ impl<T> Slot<T> {
         #[cfg(not(loom))]
         return self.data.get();
         #[cfg(loom)]
-        return self.data.with_mut(|ptr| ptr);
+        return self.data.with(|ptr| ptr as *mut _);
     }
 
     /// Tried to acquire a guard for this slot, expecting it to have the version
@@ -172,6 +164,22 @@ impl<T> Slot<T> {
             0,
             "Slot::drop_inner_value called on an occupied slot"
         );
+    }
+}
+
+/// If running on loom, AtomicU32 and UnsafeCell are not
+/// primitives that can be zeroed anymore, and we need a
+/// proper default impl to use with DefaultIfLoom on the
+/// AtomicVec
+#[cfg(loom)]
+impl<T> Default for Slot<T> {
+    fn default() -> Self {
+        Self {
+            data: UnsafeCell::new(MaybeUninit::uninit()),
+            next_free: AtomicU32::new(0),
+            ref_count: AtomicU32::new(0),
+            version: AtomicU32::new(0),
+        }
     }
 }
 

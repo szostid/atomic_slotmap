@@ -1,10 +1,6 @@
-use crate::{util::KeyDataRead as _, AtomicSlotMap, SlotGuard};
-
-#[cfg(not(loom))]
-use core::sync::atomic::Ordering;
-#[cfg(loom)]
-use loom::sync::atomic::Ordering;
-
+use crate::atomic::Ordering;
+use crate::util::KeyDataRead as _;
+use crate::{AtomicSlotMap, SlotGuard};
 use slotmap::{Key, KeyData};
 
 /// An iterator over the contents of the slotmap

@@ -33,9 +33,16 @@ use alloc::sync::Arc;
 use loom::sync::Arc;
 
 #[cfg(not(loom))]
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::cell::UnsafeCell;
 #[cfg(loom)]
-use loom::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use loom::cell::UnsafeCell;
+
+#[cfg(not(loom))]
+use core::sync::atomic;
+#[cfg(loom)]
+use loom::sync::atomic;
+
+use crate::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use slotmap::{DefaultKey, Key, KeyData};
 
@@ -569,6 +576,7 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
         OwningSlotGuard::new(key, Arc::clone(self))
     }
 
+    /// Returns an owning slot guard (loom version, not associated)
     #[cfg(loom)]
     pub fn get_owning(this: &Arc<Self>, key: K) -> Option<OwningSlotGuard<K, V>> {
         // if the key points to an unoccupied slot then
