@@ -7,33 +7,36 @@ use core::sync::atomic::{fence, AtomicU32, Ordering};
 /// reference count
 const MAX_REFCOUNT: u32 = 0xFFFFFF00;
 
+/// A single slot in the atomic slotmap.
+///
+/// # Ownership
+/// The refererence count of the slot strictly determines the ownership.
+///
+/// If the slot has no references, it is safe to write, assuming that it cannot
+/// be reached through other means (mainly the free list of the slot map).
 pub struct Slot<T> {
-    /// The data contained within the slot.
-    ///
-    /// The contents of [`SlotData`] are generally unknown, but it
-    /// can be assumed that is the slot is occupied (that is, the
-    /// slot is either occupied or marked as unoccupied but still
-    /// has a non-zero ref_count) then it can be assumed that the
-    /// data contains [`SlotData::value`].
-    ///
-    /// Otherwise, the `data` will contain [`SlotData::next_free`]
-    /// only if is is reachable through [`AtomicSlotMap::free_head`]
     pub(crate) data: UnsafeCell<MaybeUninit<T>>,
+    /// The index of the next free slot in the linked list of free
+    /// slots. The value of this is unspecified if the slot is
+    /// not a free slot (a slot in the free list)
     pub(crate) next_free: AtomicU32,
-    /// Reference count. Includes the slotmap and all SlotGuards.
+    /// The reference count. Includes the slotmap itself too (i.e.
+    /// if the slot is not removed / is reachable by the slotmap
+    /// then the reference count will never drop to zerop)
     pub(crate) ref_count: AtomicU32,
+    /// If even, the slot is free and unoccupied.
     pub(crate) version: AtomicU32,
 }
 
 impl<T> Slot<T> {
     /// Returns the pointer to the data contained within the slot.
     ///
-    /// The data is free to read if either:
-    /// - the slot is referred to as one of the free nodes. Then the
-    ///   slot is free to be read as `next_free`
-    /// - the slot is occupied. This means that it contains a value.
-    /// - the slot is not occupied, but has a non-zero refcount. This
-    ///   means that there are [`SlotGuard`]s pointing to it
+    /// The data is safe to read as init if the slot is occupied
+    /// (i.e. odd version)
+    ///
+    /// This data is safe to write to if the slot is exclusively owned
+    /// (the exact requirements are explained in the [`Slot`]s
+    /// documentation).
     pub(crate) fn data_ptr(&self) -> *mut MaybeUninit<T> {
         self.data.get()
     }
@@ -55,7 +58,7 @@ impl<T> Slot<T> {
         let mut refcount = self.ref_count.load(Ordering::Relaxed);
 
         // we cannot fetch_add, because once the reference count drops to zero,
-        // it **must** stay there - otherwise, when dropping, two locks could see
+        // it MUST stay there - otherwise, when dropping, two locks could see
         // a reference count of 1 thinking that they are supposed to drop the value.
         // we need to check if the reference count was possibly zero, compute the
         // new value, try to exchange it, and if it did changed, then we have to try
@@ -137,10 +140,9 @@ impl<T> Slot<T> {
     /// Drops the inner value contained within the slot.
     ///
     /// # Safety
-    /// The slot should have no referents (that is, its
-    /// referent count should be 0) BUT it shouldn't be
-    /// placed within the free list of the slotmap which
-    /// guarantees that the slot is owned exclusively
+    /// The slot should be exclusively owned (the exact requirements
+    /// are explained in the [`Slot`]s documentation), and there must
+    /// be a valid value in the slot (i.e. not dropped yet)
     #[inline]
     #[track_caller]
     pub(crate) unsafe fn drop_inner_value(&self) {
@@ -170,14 +172,10 @@ impl<T> Drop for Slot<T> {
         // we have exclusive ownership of the slot, we know the slotmap
         // is being dropped so there are no guards pointing to it
         if core::mem::needs_drop::<T>() && (*self.version.get_mut() % 2 == 1) {
-            let data = self.data.get_mut();
-
-            // SAFETY: the slot is occupied, we have a mutable reference to the slot
-            // so we own the value and it exists. We can read the data as
-            // value because we know the slot is occupied.
-            unsafe {
-                core::ptr::drop_in_place(data.as_mut_ptr());
-            }
+            // SAFETY: we have a mutable reference to the slot, so we have
+            // a guarantee of exclusive ownership, and the version is odd so
+            // there's a value contained within the slot
+            unsafe { self.drop_inner_value() };
         }
     }
 }

@@ -260,25 +260,6 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
         self.slots.reserve(needed);
     }
 
-    // /// Tries to reserve capacity for at least `additional` more elements to be
-    // /// inserted in the [`SlotMap`]. The collection may reserve more space to
-    // /// avoid frequent reallocations.
-    // ///
-    // /// # Examples
-    // ///
-    // /// ```
-    // /// # use atomic_slotmap::*;
-    // /// let mut sm = SlotMap::new();
-    // /// sm.insert("foo");
-    // /// sm.try_reserve(32).unwrap();
-    // /// assert!(sm.capacity() >= 33);
-    // /// ```
-    // pub fn try_reserve(&self, additional: usize) -> Result<(), TryReserveError> {
-    //     // One slot is reserved for the sentinel.
-    //     let needed = (self.len() + additional).saturating_sub(self.slots.len() - 1);
-    //     self.slots.try_reserve(needed)
-    // }
-
     /// Returns `true` if the slot map contains `key`.
     ///
     /// This will return `false` if the `key` is still stored within one of the
@@ -580,7 +561,7 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
         OwningSlotGuard::new(key, Arc::clone(self))
     }
 
-    /// Pops an index from the free stack. The returned index is guaranteed
+    /// Pops an index from the free slot linked list. The returned index is guaranteed
     /// to be a valid index into `self.slots`, into a slot that is unoccupied
     fn pop_free_index(&self) -> Option<u32> {
         let mut old_free_head = self.free_head.load(Ordering::Acquire);
