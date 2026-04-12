@@ -21,7 +21,7 @@ fn test_concurrent_insert() {
         t1.join().unwrap();
         t2.join().unwrap();
 
-        assert_eq!(sm.len(), 2);
+        assert_eq!(sm.lossy_len(), 2);
     });
 }
 
@@ -41,7 +41,7 @@ fn test_concurrent_remove() {
         let r2 = t2.join().unwrap();
 
         assert!(r1 ^ r2); // Exactly one removal should succeed.
-        assert_eq!(sm.len(), 0);
+        assert_eq!(sm.lossy_len(), 0);
     });
 }
 
@@ -67,7 +67,7 @@ fn test_concurrent_get_and_remove() {
         t1.join().unwrap();
         t2.join().unwrap();
 
-        assert_eq!(sm.len(), 0);
+        assert_eq!(sm.lossy_len(), 0);
     });
 }
 
@@ -94,7 +94,7 @@ fn test_aba_free_list() {
         t1.join().unwrap();
         t2.join().unwrap();
 
-        assert_eq!(sm.len(), 2);
+        assert_eq!(sm.lossy_len(), 2);
     });
 }
 
@@ -129,6 +129,6 @@ fn test_hard_guard_drop_interference() {
         t3.join().unwrap();
 
         // Eventually, the element must be fully freed.
-        assert_eq!(sm.len(), 0);
+        assert_eq!(sm.lossy_len(), 0);
     });
 }

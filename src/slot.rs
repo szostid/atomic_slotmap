@@ -1,4 +1,5 @@
 use crate::atomic::{fence, AtomicU32, Ordering};
+use crate::util::AtomicGetExclusive;
 use crate::UnsafeCell;
 use core::mem::MaybeUninit;
 
@@ -186,11 +187,13 @@ impl<T> Default for Slot<T> {
     }
 }
 
+impl<T> crate::vec::ZeroedOrDefault for Slot<T> {}
+
 impl<T> Drop for Slot<T> {
     fn drop(&mut self) {
         // we have exclusive ownership of the slot, we know the slotmap
         // is being dropped so there are no guards pointing to it
-        if core::mem::needs_drop::<T>() && (self.version.load(Ordering::Relaxed) % 2 == 1) {
+        if core::mem::needs_drop::<T>() && (self.version.get() % 2 == 1) {
             // SAFETY: we have a mutable reference to the slot, so we have
             // a guarantee of exclusive ownership, and the version is odd so
             // there's a value contained within the slot

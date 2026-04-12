@@ -1,4 +1,7 @@
-use crate::atomic::{AtomicPtr, AtomicU32, Ordering};
+use crate::{
+    atomic::{AtomicPtr, AtomicU32, Ordering},
+    util::AtomicGetExclusive,
+};
 use alloc::alloc;
 use core::marker::PhantomData;
 
@@ -8,9 +11,7 @@ use core::marker::PhantomData;
 /// This trait is used to enforce T: Default to propely
 /// initialize those elements if running on loom
 #[cfg(not(loom))]
-pub trait DefaultIfLoom {}
-#[cfg(not(loom))]
-impl<T> DefaultIfLoom for T {}
+pub trait ZeroedOrDefault {}
 
 /// If running on loom, most sync types (atomics, cells)
 /// aren't primitives that are safe to be zeroed anymore.
@@ -18,9 +19,7 @@ impl<T> DefaultIfLoom for T {}
 /// This trait is used to enforce T: Default to propely
 /// initialize those elements if running on loom
 #[cfg(loom)]
-pub trait DefaultIfLoom: Default {}
-#[cfg(loom)]
-impl<T: Default> DefaultIfLoom for T {}
+pub trait ZeroedOrDefault: Default {}
 
 /// An atomic vector.
 ///
@@ -36,18 +35,18 @@ impl<T: Default> DefaultIfLoom for T {}
 ///   something like a `.pop` wouldn't be able to read
 ///   the value because another thread could claim it
 ///   and start writing to it.
-pub struct AtomicVec<T: DefaultIfLoom> {
+pub struct AtomicVec<T: ZeroedOrDefault> {
     chunks: [AtomicPtr<T>; 15],
     len: AtomicU32,
     _marker: PhantomData<T>,
 }
 
-impl<T: DefaultIfLoom> AtomicVec<T> {
+impl<T: ZeroedOrDefault> AtomicVec<T> {
     /// Creates a new atomic vector that is able to store zero elements.
     #[inline]
     #[must_use]
     pub fn new() -> Self {
-        let chunks = core::array::from_fn(|_| AtomicPtr::new(core::ptr::null_mut()));
+        let chunks = core::array::from_fn(|_| AtomicPtr::default());
 
         Self {
             len: AtomicU32::new(0),
@@ -260,7 +259,7 @@ impl<T: DefaultIfLoom> AtomicVec<T> {
             #[cfg(loom)]
             {
                 // in loom, we cannot depend on the zeroed version of T (slot)
-                // to be a valid object (i.e. a zeroed AtomicU32 is correctly
+                // to be a valid object (e.g. a zeroed AtomicU32 is correctly
                 // a 0, but in loom its a more complex object that needs proper
                 // initialization)
                 for i in 0..cap {
@@ -303,15 +302,15 @@ impl<T: DefaultIfLoom> AtomicVec<T> {
     }
 }
 
-impl<T: DefaultIfLoom> Drop for AtomicVec<T> {
+impl<T: ZeroedOrDefault> Drop for AtomicVec<T> {
     fn drop(&mut self) {
         // drop all elements, then deallocate all chunks
 
         if core::mem::needs_drop::<T>() {
-            for i in 0..self.len.load(Ordering::Relaxed) {
+            for i in 0..self.len.get() {
                 let (chunk_idx, offset) = self.get_location(i);
 
-                let chunk_ptr = self.chunks[chunk_idx].load(Ordering::Relaxed);
+                let chunk_ptr = self.chunks[chunk_idx].get();
 
                 // its possible for chunk_ptr to be null if a thread
                 // has panicked when allocating the chunk.
@@ -324,8 +323,8 @@ impl<T: DefaultIfLoom> Drop for AtomicVec<T> {
             }
         }
 
-        for (i, chunk) in self.chunks.iter().enumerate() {
-            let ptr = chunk.load(Ordering::Relaxed);
+        for (i, chunk) in self.chunks.iter_mut().enumerate() {
+            let ptr = chunk.get();
 
             if !ptr.is_null() {
                 let cap = 32_usize << (i * 2);
