@@ -1,5 +1,6 @@
 use crate::atomic::{AtomicPtr, AtomicU32, Ordering};
 use alloc::alloc;
+use core::marker::PhantomData;
 
 /// If running on loom, most sync types (atomics, cells)
 /// aren't primitives that are safe to be zeroed anymore.
@@ -38,6 +39,7 @@ impl<T: Default> DefaultIfLoom for T {}
 pub struct AtomicVec<T: DefaultIfLoom> {
     chunks: [AtomicPtr<T>; 15],
     len: AtomicU32,
+    _marker: PhantomData<T>,
 }
 
 impl<T: DefaultIfLoom> AtomicVec<T> {
@@ -50,6 +52,7 @@ impl<T: DefaultIfLoom> AtomicVec<T> {
         Self {
             len: AtomicU32::new(0),
             chunks,
+            _marker: PhantomData,
         }
     }
 

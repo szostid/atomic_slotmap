@@ -30,6 +30,9 @@ pub struct Slot<T> {
     pub(crate) version: AtomicU32,
 }
 
+unsafe impl<T: Send> Send for Slot<T> {}
+unsafe impl<T: Sync> Sync for Slot<T> {}
+
 impl<T> Slot<T> {
     /// Returns the pointer to the data contained within the slot.
     ///
