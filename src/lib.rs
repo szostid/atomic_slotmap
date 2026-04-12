@@ -23,10 +23,6 @@
 
 extern crate alloc;
 
-use core::convert::Infallible;
-use core::marker::PhantomData;
-use core::mem::MaybeUninit;
-
 #[cfg(not(loom))]
 use alloc::sync::Arc;
 #[cfg(loom)]
@@ -43,7 +39,9 @@ use core::sync::atomic;
 use loom::sync::atomic;
 
 use crate::atomic::{AtomicU32, AtomicU64, Ordering};
-
+use core::convert::Infallible;
+use core::marker::PhantomData;
+use core::mem::MaybeUninit;
 use slotmap::{DefaultKey, Key, KeyData};
 
 mod util;
@@ -182,97 +180,6 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
             num_elems: AtomicU32::new(0),
             _k: PhantomData,
         }
-    }
-
-    /// Returns the number of elements in the slot map.
-    ///
-    /// Because of the nature of lock-free structures, you cannot
-    /// trust the result to not change unpredictably.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use atomic_slotmap::*;
-    /// let mut sm = AtomicSlotMap::with_capacity(10);
-    /// sm.insert("len() counts actual elements, not capacity");
-    /// let key = sm.insert("removed elements don't count either");
-    /// sm.remove(key);
-    /// assert_eq!(sm.len(), 1);
-    /// ```
-    #[inline]
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.num_elems.load(Ordering::Acquire) as usize
-    }
-
-    /// Returns if the slot map is empty.
-    ///
-    /// Because of the nature of lock-free structures, you cannot
-    /// trust the result to not change unpredictably.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use atomic_slotmap::*;
-    /// let mut sm = AtomicSlotMap::new();
-    /// let key = sm.insert("dummy");
-    /// assert_eq!(sm.is_empty(), false);
-    /// sm.remove(key);
-    /// assert_eq!(sm.is_empty(), true);
-    /// ```
-    #[inline]
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Returns the number of elements the [`AtomicSlotMap`] can hold without
-    /// reallocating.
-    ///
-    /// Because of the nature of lock-free structures, you cannot
-    /// trust the result to not change unpredictably.
-    ///
-    /// Note that an atomic slot map is based on an atomic vector-like solution,
-    /// which cannot allocate exact capacities most of the time. This means that
-    /// only `AtomicSlotMap::with_capacity(n).capacity() >= n` is guaranteed. The
-    /// structure will allocate chunks of powers of two. It will allocate as many
-    /// chunks as needed to fit the contained amount of elements.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use atomic_slotmap::*;
-    /// let sm: AtomicSlotMap<_, f64> = AtomicSlotMap::with_capacity(50);
-    ///
-    /// assert_eq!(sm.capacity(), 32 + 128);
-    /// ```
-    pub fn capacity(&self) -> usize {
-        self.slots.capacity()
-    }
-
-    /// Reserves capacity for at least `additional` more elements to be inserted
-    /// in the [`AtomicSlotMap`]. The collection may reserve more space to avoid
-    /// frequent reallocations.
-    ///
-    /// Because of the nature of lock-free structures, you cannot
-    /// trust the result to not change unpredictably.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the new allocation size overflows [`usize`].
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use atomic_slotmap::*;
-    /// let mut sm = AtomicSlotMap::new();
-    /// sm.insert("foo");
-    /// sm.reserve(32);
-    /// assert!(sm.capacity() >= 33);
-    /// ```
-    pub fn reserve(&self, additional: usize) {
-        let needed = (self.len() + additional).saturating_sub(self.slots.len() as usize);
-        self.slots.reserve(needed);
     }
 
     /// Returns `true` if the slot map contains `key`.
@@ -418,7 +325,7 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
         // we have exclusive access into slot so we can just write the value back
         slot.version.store(occupied_version, Ordering::Release);
 
-        self.num_elems.fetch_add(1, Ordering::Release);
+        self.num_elems.fetch_add(1, Ordering::Relaxed);
 
         Ok(kd.into())
     }
@@ -490,7 +397,7 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
             }
         }
 
-        self.num_elems.fetch_sub(1, Ordering::Release);
+        self.num_elems.fetch_sub(1, Ordering::Relaxed);
 
         // we've successfully removed the value. this does not mean that it was dropped,
         // but it will be eventually dropped when the last reference to it drops.
@@ -675,6 +582,108 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
             }
         }
     }
+}
+
+/// Implementation of lossy methods
+#[cfg(feature = "lossy")]
+impl<K: Key, V> AtomicSlotMap<K, V> {
+    /// Reserves capacity for at least `additional` more elements to be inserted
+    /// in the [`AtomicSlotMap`]. The collection may reserve more space to avoid
+    /// frequent reallocations.
+    ///
+    /// Because of the nature of lock-free structures, you cannot fully trust the
+    /// reservation to be successful (e.g. another thread could add an element in
+    /// the meanwhile and now there isn't enough elements leftover), but this should
+    /// rarely be an issue because the [`AtomicVec`] that backs the slotmap allocates
+    /// very rarely.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the new allocation size overflows [`usize`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use atomic_slotmap::*;
+    /// let mut sm = AtomicSlotMap::new();
+    /// sm.insert("foo");
+    /// sm.reserve(32);
+    /// assert!(sm.capacity() >= 33);
+    /// ```
+    pub fn reserve(&self, additional: usize) {
+        let needed = (self.lossy_len() + additional).saturating_sub(self.slots.len() as usize);
+        self.slots.reserve(needed);
+    }
+
+    /// Returns the number of elements in the slot map.
+    ///
+    /// If the map is being used on a single thread, the
+    /// length will likely be correct. On concurrent accesses
+    /// however, this can change dynamically and cannot
+    /// be depended on.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use atomic_slotmap::*;
+    /// let mut sm = AtomicSlotMap::with_capacity(10);
+    /// sm.insert("len() counts actual elements, not capacity");
+    /// let key = sm.insert("removed elements don't count either");
+    /// sm.remove(key);
+    /// assert_eq!(sm.len(), 1);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn lossy_len(&self) -> usize {
+        self.num_elems.load(Ordering::Relaxed) as usize
+    }
+
+    /// Returns if the slot map is empty.
+    ///
+    /// If the map is being used on a single thread, the
+    /// result will likely be correct. On concurrent accesses
+    /// however, this can change dynamically and cannot
+    /// be depended on.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use atomic_slotmap::*;
+    /// let mut sm = AtomicSlotMap::new();
+    /// let key = sm.insert("dummy");
+    /// assert_eq!(sm.is_empty(), false);
+    /// sm.remove(key);
+    /// assert_eq!(sm.is_empty(), true);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn lossy_is_empty(&self) -> bool {
+        self.lossy_len() == 0
+    }
+
+    /// Returns the number of elements the [`AtomicSlotMap`] can hold without
+    /// reallocating.
+    ///
+    /// Because of the nature of lock-free structures, you cannot
+    /// trust the result to not change unpredictably.
+    ///
+    /// Note that an atomic slot map is based on an atomic vector-like solution,
+    /// which cannot allocate exact capacities most of the time. This means that
+    /// only `AtomicSlotMap::with_capacity(n).capacity() >= n` is guaranteed. The
+    /// structure will allocate chunks of powers of two. It will allocate as many
+    /// chunks as needed to fit the contained amount of elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use atomic_slotmap::*;
+    /// let sm: AtomicSlotMap<_, f64> = AtomicSlotMap::with_capacity(50);
+    ///
+    /// assert_eq!(sm.capacity(), 32 + 128);
+    /// ```
+    pub fn capacity(&self) -> usize {
+        self.slots.capacity()
+    }
 
     /// Returns a lossy iterator over the currently occupied slots.
     ///
@@ -783,7 +792,7 @@ mod tests {
         let sm = AtomicSlotMap::new();
 
         assert!(sm.try_insert_with_key::<_, ()>(|_| Err(())).is_err());
-        assert_eq!(sm.len(), 0);
+        assert_eq!(sm.lossy_len(), 0);
 
         let key = sm.insert(123_u32);
 
@@ -803,7 +812,7 @@ mod tests {
 
         assert!(sm.remove(key));
         assert!(sm.try_insert_with_key::<_, ()>(|_| Err(())).is_err());
-        assert_eq!(sm.len(), 0);
+        assert_eq!(sm.lossy_len(), 0);
 
         let key2 = sm.insert(2_u32);
         let idx2 = key2.data().as_ffi() as u32;
