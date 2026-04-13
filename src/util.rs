@@ -52,6 +52,7 @@ pub trait AtomicGetExclusive {
 impl AtomicGetExclusive for core::sync::atomic::AtomicU32 {
     type Output = u32;
 
+    #[inline]
     fn get(&mut self) -> u32 {
         *self.get_mut()
     }
@@ -61,6 +62,7 @@ impl AtomicGetExclusive for core::sync::atomic::AtomicU32 {
 impl AtomicGetExclusive for loom::sync::atomic::AtomicU32 {
     type Output = u32;
 
+    #[inline]
     fn get(&mut self) -> u32 {
         self.load(Ordering::SeqCst)
     }
@@ -70,6 +72,7 @@ impl AtomicGetExclusive for loom::sync::atomic::AtomicU32 {
 impl<T> AtomicGetExclusive for core::sync::atomic::AtomicPtr<T> {
     type Output = *mut T;
 
+    #[inline]
     fn get(&mut self) -> *mut T {
         *self.get_mut()
     }
@@ -79,6 +82,7 @@ impl<T> AtomicGetExclusive for core::sync::atomic::AtomicPtr<T> {
 impl<T> AtomicGetExclusive for loom::sync::atomic::AtomicPtr<T> {
     type Output = *mut T;
 
+    #[inline]
     fn get(&mut self) -> *mut T {
         self.load(Ordering::SeqCst)
     }

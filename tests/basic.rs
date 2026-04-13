@@ -1,123 +1,126 @@
+//! Basic slotmap tests.
+//!
+//! Singlethreaded, not for loom
 #![cfg(not(loom))]
-
 use quickcheck::quickcheck;
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::thread::spawn;
-use std::time::Duration;
 
-use atomic_slotmap::*;
-use slotmap::*;
+mod common;
+use common::*;
 
 const _: () = {
-    const fn f<T: Send + Sync>() {}
+    const fn assert_send_sync<T: Send + Sync>() {}
 
-    f::<AtomicSlotMap<DefaultKey, u32>>();
-    f::<SlotGuard<DefaultKey, u32>>();
-    f::<OwningSlotGuard<DefaultKey, u32>>();
+    assert_send_sync::<AtomicSlotMap<DefaultKey, u32>>();
+    assert_send_sync::<SlotGuard<DefaultKey, u32>>();
+    assert_send_sync::<OwningSlotGuard<DefaultKey, u32>>();
 };
-
-#[derive(Clone)]
-struct CountDrop<'a>(&'a std::cell::RefCell<usize>);
-
-impl<'a> Drop for CountDrop<'a> {
-    fn drop(&mut self) {
-        *self.0.borrow_mut() += 1;
-    }
-}
 
 #[test]
 fn check_drops() {
-    let drops = std::cell::RefCell::new(0usize);
+    let drops = DropCounter::<()>::default();
 
     {
-        // Insert 1000 items.
         let sm = AtomicSlotMap::new();
         let mut sm_keys = Vec::new();
         for _ in 0..1000 {
-            sm_keys.push(sm.insert(CountDrop(&drops)));
+            sm_keys.push(sm.insert(drops.clone()));
         }
 
-        // Remove even keys.
+        // Remove even keys (i.e. half of the keys)
         for i in (0..1000).filter(|i| i % 2 == 0) {
             sm.remove(sm_keys[i]);
         }
 
-        // Should only have dropped 500 so far.
-        assert_eq!(*drops.borrow(), 500);
+        // Should only have dropped 500 so far
+        assert_eq!(drops.get(), 500);
     };
 
     // Now all original items should have been dropped exactly once.
-    assert_eq!(*drops.borrow(), 1000);
+    assert_eq!(drops.get(), 1000);
 }
 
 #[test]
 fn check_drops_with_multiple_guards() {
-    let drops = std::cell::RefCell::new(0usize);
+    let drops = DropCounter::<()>::default();
     let sm = AtomicSlotMap::new();
 
-    let key = sm.insert(CountDrop(&drops));
+    let key = sm.insert(drops.clone());
 
     let guard1 = sm.get(key).unwrap();
     let guard2 = sm.get(key).unwrap();
 
-    assert_eq!(*drops.borrow(), 0);
+    // held alive by the slotmap itself
+    assert_eq!(drops.get(), 0);
 
     drop(guard1);
     drop(guard2);
 
-    assert_eq!(*drops.borrow(), 0);
+    // still held alive by the slotmap itself
+    assert_eq!(drops.get(), 0);
 
     let guard1 = sm.get(key).unwrap();
     let guard2 = sm.get(key).unwrap();
 
     assert!(sm.remove(key));
 
-    assert_eq!(*drops.borrow(), 0);
+    // held alive by guard 1 2
+    assert_eq!(drops.get(), 0);
 
     drop(guard1);
 
-    assert_eq!(*drops.borrow(), 0);
+    // held alive by guard 2
+    assert_eq!(drops.get(), 0);
 
     drop(guard2);
 
-    assert_eq!(*drops.borrow(), 1);
+    assert_eq!(drops.get(), 1);
 }
 
 #[test]
-fn try_insert_err_keeps_fresh_slot_reusable() {
+fn check_slot_reusability() {
     use slotmap::Key as _;
 
-    let sm = AtomicSlotMap::new();
+    // just to cover Default impl, should be equivalent to AtomicSlotMap::new
+    let sm = AtomicSlotMap::default();
 
-    assert!(sm.try_insert_with_key::<_, ()>(|_| Err(())).is_err());
-    assert_eq!(sm.lossy_len(), 0);
+    let mut first_key = DefaultKey::null();
 
-    let key = sm.insert(123_u32);
+    assert_eq!(
+        sm.try_insert_with_key(|key| {
+            first_key = key;
+            Err(())
+        }),
+        Err(())
+    );
 
-    // The freshly allocated slot should be recycled after the failed insert.
-    let idx = key.data().as_ffi() as u32;
-    assert_eq!(idx, 0);
+    assert!(sm.lossy_is_empty());
+
+    // the closure shouldn't have provided a null key
+    assert!(!first_key.is_null());
+
+    // the slotmap must have resized to somehow acquire the key to provide for the closure
+    let cap = sm.capacity();
+    assert_ne!(cap, 0);
+
+    let key = sm.insert(123);
+
+    // the value should reuse the first key, and the slotmap shouldnt resize
+    assert_eq!(key, first_key);
     assert_eq!(sm.get(key).as_deref(), Some(&123));
-}
+    assert_eq!(cap, sm.capacity());
+    assert_eq!(sm.lossy_len(), 1);
 
-#[test]
-fn try_insert_err_keeps_reused_slot_reusable() {
-    use slotmap::Key as _;
+    sm.remove(key);
 
-    let sm = AtomicSlotMap::new();
-    let key = sm.insert(1_u32);
-    let idx = key.data().as_ffi() as u32;
+    assert!(sm.lossy_is_empty());
+    assert!(sm.get(key).is_none());
 
-    assert!(sm.remove(key));
-    assert!(sm.try_insert_with_key::<_, ()>(|_| Err(())).is_err());
-    assert_eq!(sm.lossy_len(), 0);
-
-    let key2 = sm.insert(2_u32);
-    let idx2 = key2.data().as_ffi() as u32;
-
-    assert_eq!(idx2, idx);
-    assert_eq!(sm.get(key2).as_deref(), Some(&2));
+    // the value should reuse the first key, and the slotmap shouldnt resize
+    let key = sm.insert(456);
+    assert_eq!(sm.get(key).as_deref(), Some(&456));
+    assert_eq!(cap, sm.capacity());
+    assert_eq!(sm.lossy_len(), 1);
 }
 
 quickcheck! {
@@ -173,129 +176,94 @@ quickcheck! {
 }
 
 #[test]
-fn test_multithreaded() {
-    // tests multiple threads adding and removing elements into the slotmap and verifying that
-    // they have correct values. this test does not modify correct dropping of elements.
-    let sm = Arc::new(AtomicSlotMap::<_, u32>::new());
+fn check_lossy_methods() {
+    // on singlethreaded (i.e. exclusive access), the lossy iter should be predictable
+    let sm = AtomicSlotMap::with_capacity(4);
+    let cap1 = sm.capacity();
+    assert!(cap1 >= 4);
 
-    let mut threads = Vec::with_capacity(10);
+    let _k1 = sm.insert(10);
+    let _k2 = sm.insert(20);
+    let _k3 = sm.insert(30);
 
-    #[allow(clippy::needless_range_loop)]
-    for _ in 0..10 {
-        let sm = Arc::clone(&sm);
+    assert_eq!(sm.lossy_iter().count(), 3);
+    assert!(!sm.lossy_is_empty());
 
-        threads.push(spawn(move || {
-            let mut keys = [DefaultKey::null(); 100];
+    // shouldn't have resized
+    assert_eq!(sm.capacity(), cap1);
 
-            for i in 0..100 {
-                keys[i] = sm.insert(i as u32);
+    sm.reserve(50);
+    let cap2 = sm.capacity();
+    assert_ne!(cap2, cap1);
+    assert!(cap2 >= 53);
 
-                // verify that all previous keys still have their expected values
-                for k in 0..i {
-                    assert_eq!(sm.get(keys[k]).as_deref().copied(), Some(k as u32));
-                }
-            }
-
-            // now we deallocate 10 keys so that we can rest reclamation
-            for i in 0..10 {
-                assert!(sm.remove(keys[i]));
-
-                // verify that all removed keys still have their expected values
-                for k in (i + 1)..100 {
-                    assert_eq!(sm.get(keys[k]).as_deref().copied(), Some(k as u32));
-                }
-            }
-
-            // we allocate 10 keys again
-            for i in 0..10 {
-                keys[i] = sm.insert(i as u32);
-
-                // verify that all previous keys still have their expected values
-                for k in 0..i {
-                    assert_eq!(sm.get(keys[k]).as_deref().copied(), Some(k as u32));
-                }
-            }
-
-            // we deallocate all keys now
-            for i in 0..100 {
-                assert!(sm.remove(keys[i]));
-
-                // verify that all removed keys still have their expected values
-                for k in (i + 1)..100 {
-                    assert_eq!(sm.get(keys[k]).as_deref().copied(), Some(k as u32));
-                }
-            }
-        }));
+    for i in 0..50 {
+        sm.insert(i);
     }
 
-    for thread in threads {
-        thread.join().unwrap()
-    }
+    assert_eq!(sm.capacity(), cap2);
 }
 
 #[test]
-fn test_multithreaded_closure_insertion() {
-    // this additionally stress-tests the slotmap by using a very slow (sleeping) closure
-    // for the insertion of elements. this makes everything more prone to possible collisions
-    let sm = Arc::new(AtomicSlotMap::<_, u32>::new());
+fn test_guards_and_contains() {
+    // just to cover with_key, it shouldnt make a difference
+    let sm = Arc::new(AtomicSlotMap::with_key());
+    let k1 = sm.insert(42);
 
-    let mut threads = Vec::with_capacity(10);
+    assert!(sm.contains_key(k1));
+    assert!(!sm.contains_key(DefaultKey::null()));
 
-    #[allow(clippy::needless_range_loop)]
-    for _ in 0..10 {
-        let sm = Arc::clone(&sm);
+    {
+        let owning_guard = AtomicSlotMap::get_owning(&sm, k1).unwrap();
+        assert_eq!(*owning_guard, 42);
+        assert_eq!(owning_guard.as_ref(), &42);
+        assert_eq!(owning_guard.key(), k1);
 
-        threads.push(spawn(move || {
-            let mut keys = [DefaultKey::null(); 100];
+        let owning_clone = owning_guard.clone();
+        assert_eq!(*owning_clone, 42);
+        assert_eq!(owning_clone.as_ref(), &42);
+        assert_eq!(owning_clone.key(), k1);
 
-            for i in 0..100 {
-                keys[i] = sm.insert_with_key(|_| {
-                    std::thread::sleep(Duration::from_millis(1));
-                    i as u32
-                });
-
-                // verify that all previous keys still have their expected values
-                for k in 0..i {
-                    assert_eq!(sm.get(keys[k]).as_deref().copied(), Some(k as u32));
-                }
-            }
-
-            // now we deallocate 10 keys so that we can rest reclamation
-            for i in 0..10 {
-                assert!(sm.remove(keys[i]));
-
-                // verify that all removed keys still have their expected values
-                for k in (i + 1)..100 {
-                    assert_eq!(sm.get(keys[k]).as_deref().copied(), Some(k as u32));
-                }
-            }
-
-            // we allocate 10 keys again
-            for i in 0..10 {
-                keys[i] = sm.insert_with_key(|_| {
-                    std::thread::sleep(Duration::from_millis(1));
-                    i as u32
-                });
-
-                // verify that all previous keys still have their expected values
-                for k in 0..i {
-                    assert_eq!(sm.get(keys[k]).as_deref().copied(), Some(k as u32));
-                }
-            }
-
-            // we deallocate all keys now
-            for i in 0..100 {
-                assert!(sm.remove(keys[i]));
-
-                // verify that all removed keys still have their expected values
-                for k in (i + 1)..100 {
-                    assert_eq!(sm.get(keys[k]).as_deref().copied(), Some(k as u32));
-                }
-            }
-        }));
+        let normal_guard = sm.get(k1).unwrap();
+        assert_eq!(*normal_guard, 42);
+        assert_eq!(normal_guard.as_ref(), &42);
+        assert_eq!(normal_guard.key(), k1);
     }
 
-    for thread in threads {
-        thread.join().unwrap();
-    }
+    sm.remove(k1);
+
+    assert!(!sm.contains_key(k1));
+    assert!(sm.get(k1).is_none());
+    assert!(AtomicSlotMap::get_owning(&sm, k1).is_none());
+}
+
+#[test]
+fn test_fmt() {
+    // this is kinda pointless and more for the sake of coverage and MIRI checking than
+    // actually checking the correctness of the method, because this uses the same exact
+    // approach as .as_ref() / deref and then just the formatting impl of T
+    //
+    // note that the slotmap itself doesnt have a format impl because of TOCTOU (a method
+    // like .lossy_fmt could exist but then it wouldnt integrate into the formatting
+    // macros so i feel like its pointless)
+    let sm = Arc::new(AtomicSlotMap::new());
+
+    let key = sm.insert("hi");
+
+    let sm_thread1 = Arc::clone(&sm);
+    let t1 = thread::spawn(move || {
+        let guard = sm_thread1.get(key).unwrap();
+        assert_eq!(format!("{guard}"), "hi");
+        assert_eq!(format!("{guard:?}"), "\"hi\"");
+    });
+
+    let sm_thread2 = Arc::clone(&sm);
+    let t2 = thread::spawn(move || {
+        let guard = sm_thread2.get_owning(key).unwrap();
+        assert_eq!(format!("{guard}"), "hi");
+        assert_eq!(format!("{guard:?}"), "\"hi\"");
+    });
+
+    t1.join().unwrap();
+    t2.join().unwrap();
 }
