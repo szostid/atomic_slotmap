@@ -41,6 +41,10 @@ impl KeyDataRead for KeyData {
 
 pub trait AtomicGetExclusive {
     type Output;
+
+    /// Performs a `get_mut` + `Deref` (but works with loom
+    /// too, where the method is not available and an atomic
+    /// load has to be performed instead)
     fn get(&mut self) -> Self::Output;
 }
 
