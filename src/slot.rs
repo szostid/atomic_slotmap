@@ -1,6 +1,7 @@
-use core::cell::UnsafeCell;
+use crate::atomic::{fence, AtomicU32, Ordering};
+use crate::util::AtomicGetExclusive;
+use crate::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{fence, AtomicU32, Ordering};
 
 /// Similar to [`std::sync::Arc`], the Slot has a maximum reference
 /// count cap to prevent leaked references from overflowing the
@@ -30,6 +31,9 @@ pub struct Slot<T> {
     pub(crate) version: AtomicU32,
 }
 
+unsafe impl<T: Send> Send for Slot<T> {}
+unsafe impl<T: Sync> Sync for Slot<T> {}
+
 impl<T> Slot<T> {
     /// Returns the pointer to the data contained within the slot.
     ///
@@ -40,7 +44,10 @@ impl<T> Slot<T> {
     /// (the exact requirements are explained in the [`Slot`]s
     /// documentation).
     pub(crate) fn data_ptr(&self) -> *mut MaybeUninit<T> {
-        self.data.get()
+        #[cfg(not(loom))]
+        return self.data.get();
+        #[cfg(loom)]
+        return self.data.with(|ptr| ptr as *mut _);
     }
 
     /// Tried to acquire a guard for this slot, expecting it to have the version
@@ -164,11 +171,29 @@ impl<T> Slot<T> {
     }
 }
 
+/// If running on loom, AtomicU32 and UnsafeCell are not
+/// primitives that can be zeroed anymore, and we need a
+/// proper default impl to use with DefaultIfLoom on the
+/// AtomicVec
+#[cfg(loom)]
+impl<T> Default for Slot<T> {
+    fn default() -> Self {
+        Self {
+            data: UnsafeCell::new(MaybeUninit::uninit()),
+            next_free: AtomicU32::new(0),
+            ref_count: AtomicU32::new(0),
+            version: AtomicU32::new(0),
+        }
+    }
+}
+
+impl<T> crate::vec::ZeroedOrDefault for Slot<T> {}
+
 impl<T> Drop for Slot<T> {
     fn drop(&mut self) {
         // we have exclusive ownership of the slot, we know the slotmap
         // is being dropped so there are no guards pointing to it
-        if core::mem::needs_drop::<T>() && (*self.version.get_mut() % 2 == 1) {
+        if core::mem::needs_drop::<T>() && (self.version.get() % 2 == 1) {
             // SAFETY: we have a mutable reference to the slot, so we have
             // a guarantee of exclusive ownership, and the version is odd so
             // there's a value contained within the slot

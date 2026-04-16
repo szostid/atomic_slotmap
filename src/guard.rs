@@ -1,4 +1,5 @@
-use crate::{util::KeyDataRead as _, AtomicSlotMap, Slot};
+use crate::util::KeyDataRead as _;
+use crate::{AtomicSlotMap, Slot};
 use alloc::fmt;
 use core::ops::Deref;
 use slotmap::Key;

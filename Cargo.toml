@@ -20,12 +20,17 @@ categories = ["data-structures", "memory-management", "caching"]
 rust-version = "1.58.0"
 
 [features]
-default = ["std"]
-unstable = []
-std = []
+default = ["lossy"]
+lossy = []
 
 [dependencies]
 slotmap = "^1"
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7.2"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [dev-dependencies]
 quickcheck = "1.0"

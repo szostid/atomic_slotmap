@@ -1,6 +1,7 @@
-use crate::{util::KeyDataRead as _, AtomicSlotMap, Slot};
+use crate::util::KeyDataRead as _;
+use crate::Arc;
+use crate::{AtomicSlotMap, Slot};
 use alloc::fmt;
-use alloc::sync::Arc;
 use core::ops::Deref;
 use slotmap::Key;
 

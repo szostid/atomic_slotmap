@@ -1,5 +1,25 @@
+use crate::{
+    atomic::{AtomicPtr, AtomicU32, Ordering},
+    util::AtomicGetExclusive,
+};
 use alloc::alloc;
-use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use core::marker::PhantomData;
+
+/// If running on loom, most sync types (atomics, cells)
+/// aren't primitives that are safe to be zeroed anymore.
+///
+/// This trait is used to enforce T: Default to propely
+/// initialize those elements if running on loom
+#[cfg(not(loom))]
+pub trait ZeroedOrDefault {}
+
+/// If running on loom, most sync types (atomics, cells)
+/// aren't primitives that are safe to be zeroed anymore.
+///
+/// This trait is used to enforce T: Default to propely
+/// initialize those elements if running on loom
+#[cfg(loom)]
+pub trait ZeroedOrDefault: Default {}
 
 /// An atomic vector.
 ///
@@ -15,22 +35,23 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 ///   something like a `.pop` wouldn't be able to read
 ///   the value because another thread could claim it
 ///   and start writing to it.
-pub struct AtomicVec<T> {
+pub struct AtomicVec<T: ZeroedOrDefault> {
     chunks: [AtomicPtr<T>; 15],
     len: AtomicU32,
+    _marker: PhantomData<T>,
 }
 
-impl<T> AtomicVec<T> {
+impl<T: ZeroedOrDefault> AtomicVec<T> {
     /// Creates a new atomic vector that is able to store zero elements.
     #[inline]
     #[must_use]
     pub fn new() -> Self {
-        // equivalent to [AtomicPtr::new(ptr::null_mut()); 15] but AtomicPtr does not implement copy
-        let chunks = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        let chunks = core::array::from_fn(|_| AtomicPtr::default());
 
         Self {
             len: AtomicU32::new(0),
             chunks,
+            _marker: PhantomData,
         }
     }
 
@@ -235,6 +256,17 @@ impl<T> AtomicVec<T> {
             // zeroed (or written to, in a safe manner, by the user)
             let new_ptr = alloc::alloc_zeroed(layout) as *mut T;
 
+            #[cfg(loom)]
+            {
+                // in loom, we cannot depend on the zeroed version of T (slot)
+                // to be a valid object (e.g. a zeroed AtomicU32 is correctly
+                // a 0, but in loom its a more complex object that needs proper
+                // initialization)
+                for i in 0..cap {
+                    core::ptr::write(new_ptr.add(i), T::default());
+                }
+            }
+
             match self.chunks[chunk_idx].compare_exchange(
                 core::ptr::null_mut(),
                 new_ptr,
@@ -259,7 +291,10 @@ impl<T> AtomicVec<T> {
         let mut ptr = self.chunks[chunk_idx].load(Ordering::Acquire);
 
         while ptr.is_null() {
+            #[cfg(not(loom))]
             core::hint::spin_loop();
+            #[cfg(loom)]
+            loom::thread::yield_now();
             ptr = self.chunks[chunk_idx].load(Ordering::Acquire);
         }
 
@@ -267,15 +302,15 @@ impl<T> AtomicVec<T> {
     }
 }
 
-impl<T> Drop for AtomicVec<T> {
+impl<T: ZeroedOrDefault> Drop for AtomicVec<T> {
     fn drop(&mut self) {
         // drop all elements, then deallocate all chunks
 
         if core::mem::needs_drop::<T>() {
-            for i in 0..*self.len.get_mut() {
+            for i in 0..self.len.get() {
                 let (chunk_idx, offset) = self.get_location(i);
 
-                let chunk_ptr = *self.chunks[chunk_idx].get_mut();
+                let chunk_ptr = self.chunks[chunk_idx].get();
 
                 // its possible for chunk_ptr to be null if a thread
                 // has panicked when allocating the chunk.
@@ -289,7 +324,7 @@ impl<T> Drop for AtomicVec<T> {
         }
 
         for (i, chunk) in self.chunks.iter_mut().enumerate() {
-            let ptr = *chunk.get_mut();
+            let ptr = chunk.get();
 
             if !ptr.is_null() {
                 let cap = 32_usize << (i * 2);
