@@ -45,8 +45,8 @@ impl<T: ZeroedOrDefault> AtomicVec<T> {
     /// Creates a new atomic vector that is able to store zero elements.
     #[inline]
     #[must_use]
-    pub fn new() -> Self {
-        let chunks = core::array::from_fn(|_| AtomicPtr::default());
+    pub const fn new() -> Self {
+        let chunks = [const { AtomicPtr::new(core::ptr::null_mut()) }; 15];
 
         Self {
             len: AtomicU32::new(0),

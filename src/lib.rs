@@ -67,14 +67,14 @@ const SENTINEL: u32 = u32::MAX;
 /// Creates a packed `free_head` from a tag and index
 #[inline]
 #[must_use]
-fn pack_free_head(tag: u32, index: u32) -> u64 {
+const fn pack_free_head(tag: u32, index: u32) -> u64 {
     ((tag as u64) << 32) | (index as u64)
 }
 
 /// Unpacks a packed `free_head` element into its tag and index
 #[inline]
 #[must_use]
-fn unpack_free_head(packed: u64) -> (u32, u32) {
+const fn unpack_free_head(packed: u64) -> (u32, u32) {
     ((packed >> 32) as u32, packed as u32)
 }
 
@@ -108,8 +108,8 @@ impl<V> AtomicSlotMap<DefaultKey, V> {
     /// # use atomic_slotmap::*;
     /// let mut sm: AtomicSlotMap<_, i32> = AtomicSlotMap::new();
     /// ```
-    pub fn new() -> Self {
-        Self::with_capacity_and_key(0)
+    pub const fn new() -> Self {
+        Self::with_key()
     }
 
     /// Creates an empty [`AtomicSlotMap`] with the given capacity.
@@ -144,8 +144,13 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     /// }
     /// let mut positions: AtomicSlotMap<PositionKey, i32> = AtomicSlotMap::with_key();
     /// ```
-    pub fn with_key() -> Self {
-        Self::with_capacity_and_key(0)
+    pub const fn with_key() -> Self {
+        Self {
+            slots: AtomicVec::new(),
+            free_head: AtomicU64::new(pack_free_head(0, SENTINEL)),
+            num_elems: AtomicU32::new(0),
+            _k: PhantomData,
+        }
     }
 
     /// Creates an empty [`AtomicSlotMap`] with the given capacity and a custom key
