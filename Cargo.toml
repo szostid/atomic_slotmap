@@ -1,9 +1,9 @@
 [package]
 name = "atomic_slotmap"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2018"
 authors = ["Dawid Szostak <szostid@gmail.com>"]
-description = "Atomic slotmap data structure"
+description = "Lockfree slotmap data structure"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/szostid/atomic_slotmap"
 readme = "README.md"
@@ -30,9 +30,6 @@ criterion = "0.5"
 parking_lot = "0.12"
 rand_chacha = "0.10"
 rand = "0.10"
-
-[build-dependencies]
-version_check = "0.9"
 
 [[bench]]
 name = "concurrency"
