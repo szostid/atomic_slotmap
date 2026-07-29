@@ -1,10 +1,31 @@
 //! # `atomic_slotmap`
 //!
-//! This library provies an extension to the [slotmap] crate, adding an atomic
-//! slotmap which can be modified without a mutable reference.
+//! This library provides an extension to the [slotmap] crate, adding an atomic
+//! lockfree slotmap which can be modified without a mutable reference.
 //!
-//! Unlike the slotmaps from [slotmap], this slotmap is impossible to iterate,
-//! or generally to modify in bulk because of TOCTOU issues.
+//! The API of this crate is mostly similar to the slotmaps from the slotmap crate.
+//! A `get_owning` operation which isn't tied to the lifetime of the slotmap is added
+//! (requiring `Arc<Self>`).
+//!
+//! ## Limitations
+//!
+//! The lock-free-ness of this slotmap makes it impossible to bulk read / modify its
+//! contents, so the potentially TOCTOU-prone methods are marked as `lossy_...`
+//! and require the `lossy` feature to be enabled (enabled by default).
+//! It is impossible to clone or clear this structure.
+//!
+//! ## Performance
+//!
+//! The structure is perfect for minimizing latency, as it allows for multiple readers
+//! at the same time, while still allowing for insertions to happen (they don't block
+//! each other at all). Uncontended insertions are relatively performant, with
+//! singlethreaded insertion tests showing about the same performance as a regular
+//! `Mutex<SlotMap<...>>`. The worst-case scenario in terms of usage is pure insertions
+//! with high contention. Note that if ~10% of the operations involve insertions and
+//! the rest is reads, which is a more real-life workload, the `AtomicSlotMap` seems
+//! to outperform the `SlotMap` in all multithreaded tests.
+//!
+//! More benchmarks are shown on the github page of this crate.
 #![crate_name = "atomic_slotmap"]
 #![cfg_attr(not(test), no_std)]
 #![warn(
@@ -85,13 +106,24 @@ const fn unpack_free_head(packed: u64) -> (u32, u32) {
 
 /// Atomic slot map, lockfree storage with stable unique keys.
 ///
-/// See [crate documentation](crate) for more details.
+/// ## Limitations
+/// The lock-free-ness of this slotmap makes it impossible to bulk read / modify its
+/// contents, so the potentially TOCTOU-prone methods are marked as `lossy_...`
+/// and require the `lossy` feature to be enabled (enabled by default).
+/// It is impossible to clone or clear this structure.
 ///
-/// It is impossible to bulk view/modify the elements of an
-/// atomic slotmae because of the nature of lockfree structures,
-/// which are subject to TOCTOU. This means that it is impossible
-/// to [`Debug`], [`Iterate`](`Iterator`), [`Clone`] or even clear
-/// the slotmap.
+/// ## Performance
+///
+/// The structure is perfect for minimizing latency, as it allows for multiple readers
+/// at the same time, while still allowing for insertions to happen (they don't block
+/// each other at all). Uncontended insertions are relatively performant, with
+/// singlethreaded insertion tests showing about the same performance as a regular
+/// `Mutex<SlotMap<...>>`. The worst-case scenario in terms of usage is pure insertions
+/// with high contention. Note that if ~10% of the operations involve insertions and
+/// the rest is reads, which is a more real-life workload, the `AtomicSlotMap` seems
+/// to outperform the `SlotMap` in all multithreaded tests.
+///
+/// More benchmarks are shown on the github page of this crate.
 #[allow(missing_debug_implementations)]
 pub struct AtomicSlotMap<K: Key, V> {
     slots: AtomicVec<Slot<V>>,
