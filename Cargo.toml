@@ -7,15 +7,7 @@ description = "Atomic slotmap data structure"
 license = "Zlib"
 repository = "https://github.com/szostid/atomic_slotmap"
 readme = "README.md"
-keywords = [
-    "slotmap",
-    "storage",
-    "allocator",
-    "arena",
-    "reference",
-    "atomic",
-    "lockfree",
-]
+keywords = ["slotmap", "storage", "allocator", "arena", "lockfree"]
 categories = ["data-structures", "memory-management", "caching"]
 rust-version = "1.58.0"
 
