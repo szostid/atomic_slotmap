@@ -4,8 +4,9 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use slotmap::{DefaultKey, SlotMap};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
+use std::unimplemented;
 
-const OPS_PER_THREAD: usize = 1000;
+const OPS_PER_THREAD: usize = 100_000;
 
 pub trait Benchmark<S: ConcurrentMap> {
     type SharedState: Send + Sync;
@@ -20,6 +21,7 @@ pub trait ConcurrentMap: Send + Sync + 'static {
     fn create() -> Self;
     fn insert(&self, val: usize) -> Self::Key;
     fn get(&self, key: Self::Key) -> Option<usize>;
+    fn write(&self, key: Self::Key, val: usize);
 }
 
 impl ConcurrentMap for AtomicSlotMap<DefaultKey, usize> {
@@ -43,6 +45,44 @@ impl ConcurrentMap for AtomicSlotMap<DefaultKey, usize> {
     #[inline(always)]
     fn get(&self, key: Self::Key) -> Option<usize> {
         Some(*self.get(key)?)
+    }
+
+    #[inline(always)]
+    fn write(&self, _: Self::Key, _: usize) {
+        unimplemented!()
+    }
+}
+
+pub struct AtomicSlotMapRwLock(AtomicSlotMap<DefaultKey, parking_lot::RwLock<usize>>);
+
+impl ConcurrentMap for AtomicSlotMapRwLock {
+    type Key = DefaultKey;
+
+    #[inline(always)]
+    fn name() -> &'static str {
+        "AtomicSlotMap<RwLock<...>>"
+    }
+
+    #[inline(always)]
+    fn create() -> Self {
+        Self(AtomicSlotMap::new())
+    }
+
+    #[inline(always)]
+    fn insert(&self, val: usize) -> Self::Key {
+        self.0.insert(parking_lot::RwLock::new(val))
+    }
+
+    #[inline(always)]
+    fn get(&self, key: Self::Key) -> Option<usize> {
+        Some(*self.0.get(key)?.read())
+    }
+
+    #[inline(always)]
+    fn write(&self, key: Self::Key, val: usize) {
+        if let Some(old_val) = self.0.get(key) {
+            *old_val.write() = val;
+        }
     }
 }
 
@@ -70,6 +110,13 @@ impl ConcurrentMap for StdMutexMap {
     fn get(&self, key: Self::Key) -> Option<usize> {
         self.0.lock().unwrap().get(key).copied()
     }
+
+    #[inline(always)]
+    fn write(&self, key: Self::Key, val: usize) {
+        if let Some(old_val) = self.0.lock().unwrap().get_mut(key) {
+            *old_val = val;
+        }
+    }
 }
 
 pub struct PlMutexMap(parking_lot::Mutex<SlotMap<DefaultKey, usize>>);
@@ -95,6 +142,13 @@ impl ConcurrentMap for PlMutexMap {
     #[inline(always)]
     fn get(&self, key: Self::Key) -> Option<usize> {
         self.0.lock().get(key).copied()
+    }
+
+    #[inline(always)]
+    fn write(&self, key: Self::Key, val: usize) {
+        if let Some(old_val) = self.0.lock().get_mut(key) {
+            *old_val = val;
+        }
     }
 }
 
@@ -122,6 +176,13 @@ impl ConcurrentMap for StdRwLockMap {
     fn get(&self, key: Self::Key) -> Option<usize> {
         self.0.read().unwrap().get(key).copied()
     }
+
+    #[inline(always)]
+    fn write(&self, key: Self::Key, val: usize) {
+        if let Some(old_val) = self.0.write().unwrap().get_mut(key) {
+            *old_val = val;
+        }
+    }
 }
 
 pub struct PlRwLockMap(parking_lot::RwLock<SlotMap<DefaultKey, usize>>);
@@ -147,6 +208,13 @@ impl ConcurrentMap for PlRwLockMap {
     #[inline(always)]
     fn get(&self, key: Self::Key) -> Option<usize> {
         self.0.read().get(key).copied()
+    }
+
+    #[inline(always)]
+    fn write(&self, key: Self::Key, val: usize) {
+        if let Some(old_val) = self.0.write().get_mut(key) {
+            *old_val = val;
+        }
     }
 }
 
@@ -208,6 +276,25 @@ macro_rules! run_bench_for_all {
         run_bench::<StdRwLockMap, $bench_type>(&mut group, $threads);
         run_bench::<PlRwLockMap, $bench_type>(&mut group, $threads);
         run_bench::<AtomicSlotMap<DefaultKey, usize>, $bench_type>(&mut group, $threads);
+        run_bench::<AtomicSlotMapRwLock, $bench_type>(&mut group, $threads);
+        group.finish();
+    };
+}
+
+macro_rules! run_write_bench_for_all {
+    ($c:expr, $bench_type:ident, $threads:expr) => {
+        let name = format!(
+            "{} (tc: {})",
+            <$bench_type as Benchmark<StdMutexMap>>::name(),
+            $threads
+        );
+
+        let mut group = $c.benchmark_group(name);
+        run_bench::<StdMutexMap, $bench_type>(&mut group, $threads);
+        run_bench::<PlMutexMap, $bench_type>(&mut group, $threads);
+        run_bench::<StdRwLockMap, $bench_type>(&mut group, $threads);
+        run_bench::<PlRwLockMap, $bench_type>(&mut group, $threads);
+        run_bench::<AtomicSlotMapRwLock, $bench_type>(&mut group, $threads);
         group.finish();
     };
 }
@@ -306,10 +393,43 @@ fn bench_concurrent_mixed(c: &mut Criterion) {
     run_bench_for_all!(c, MixedWorkloadBenchmark, threads * 3);
 }
 
+struct ConcurrentWritesBenchmark;
+
+impl<S: ConcurrentMap> Benchmark<S> for ConcurrentWritesBenchmark {
+    type SharedState = Vec<S::Key>;
+
+    fn name() -> &'static str {
+        "Concurrent writes"
+    }
+
+    fn setup(map: &S) -> Self::SharedState {
+        let mut keys = Vec::with_capacity(OPS_PER_THREAD);
+        for i in 0..OPS_PER_THREAD {
+            keys.push(map.insert(i));
+        }
+        keys
+    }
+
+    fn run(map: Arc<S>, keys: Arc<Self::SharedState>, thread_id: usize) {
+        for i in 0..OPS_PER_THREAD {
+            map.write(keys[i], thread_id * 1000 + i);
+        }
+    }
+}
+
+fn bench_concurrent_writes(c: &mut Criterion) {
+    let threads = std::thread::available_parallelism().unwrap().get();
+    run_write_bench_for_all!(c, ConcurrentWritesBenchmark, 1);
+    run_write_bench_for_all!(c, ConcurrentWritesBenchmark, threads);
+    run_write_bench_for_all!(c, ConcurrentWritesBenchmark, threads * 2);
+    run_write_bench_for_all!(c, ConcurrentWritesBenchmark, threads * 3);
+}
+
 criterion_group!(
     benches,
     bench_concurrent_inserts,
     bench_concurrent_reads,
-    bench_concurrent_mixed
+    bench_concurrent_mixed,
+    bench_concurrent_writes,
 );
 criterion_main!(benches);
