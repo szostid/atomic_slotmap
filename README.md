@@ -4,7 +4,8 @@ This library is an extension to the [slotmap](https://crates.io/crates/slotmap) 
 
 The API of this crate is mostly similar to the slotmaps from the slotmap crate. An `get_owning` operation which isn't tied to the slotmap is added. The lock-free-ness of this slotmap makes it impossible to bulk read / modify its contents. This means that it is impossible to clear, iterate, clone or debug the slotmap without an exclusive mutable reference.
 
-This structure outperforms Mutex and RwLock wraps of the regular SlotMap
+This structure outperforms Mutex and RwLock wraps of the regular SlotMap in most of the scenarios:
 <img src="perf.png" alt="example"/>
+Tests were performed on an M2 macbook air with 8 cores.
 
 [^1]: Threads might spinloop for very short amounts of time when an atomic vector allocated a new chunk of memory (this code path is hard to hit even after a long time of fuzzing)

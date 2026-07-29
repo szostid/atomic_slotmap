@@ -1,6 +1,9 @@
 #![allow(clippy::incompatible_msrv, reason = "benchmark")]
 use atomic_slotmap::AtomicSlotMap;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use rand::seq::SliceRandom;
+use rand::SeedableRng;
+use rand_chacha::ChaCha8Rng;
 use slotmap::{DefaultKey, SlotMap};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
@@ -8,10 +11,24 @@ use std::unimplemented;
 
 const OPS_PER_THREAD: usize = 100_000;
 
+fn shuffle_keys<K: Copy>(keys: Vec<K>, thread_count: usize) -> Vec<Vec<K>> {
+    let mut shuffled = Vec::with_capacity(thread_count);
+
+    let mut rng = ChaCha8Rng::seed_from_u64(42);
+
+    for _ in 0..thread_count {
+        let mut thread_keys = keys.clone();
+        thread_keys.shuffle(&mut rng);
+        shuffled.push(thread_keys);
+    }
+
+    shuffled
+}
+
 pub trait Benchmark<S: ConcurrentMap> {
     type SharedState: Send + Sync;
     fn name() -> &'static str;
-    fn setup(map: &S) -> Self::SharedState;
+    fn setup(map: &S, thread_count: usize) -> Self::SharedState;
     fn run(map: Arc<S>, state: Arc<Self::SharedState>, thread_id: usize);
 }
 
@@ -228,7 +245,7 @@ fn run_bench<S: ConcurrentMap, B: Benchmark<S>>(
 
             for _ in 0..iters {
                 let map = Arc::new(S::create());
-                let state = Arc::new(B::setup(&map));
+                let state = Arc::new(B::setup(&map, thread_count));
 
                 // We need two barriers to box in the actual workload
                 let start_barrier = Arc::new(Barrier::new(thread_count + 1));
@@ -308,7 +325,7 @@ impl<S: ConcurrentMap> Benchmark<S> for ConcurrentInsertBenchmark {
         "Concurrent inserts"
     }
 
-    fn setup(_map: &S) -> Self::SharedState {}
+    fn setup(_map: &S, _thread_count: usize) -> Self::SharedState {}
 
     fn run(map: Arc<S>, _state: Arc<Self::SharedState>, _thread_id: usize) {
         for i in 0..OPS_PER_THREAD {
@@ -328,23 +345,25 @@ fn bench_concurrent_inserts(c: &mut Criterion) {
 struct ConcurrentReadsBenchmark;
 
 impl<S: ConcurrentMap> Benchmark<S> for ConcurrentReadsBenchmark {
-    type SharedState = Vec<S::Key>;
+    type SharedState = Vec<Vec<S::Key>>;
 
     fn name() -> &'static str {
         "Concurrent reads"
     }
 
-    fn setup(map: &S) -> Self::SharedState {
+    fn setup(map: &S, thread_count: usize) -> Self::SharedState {
         let mut keys = Vec::with_capacity(OPS_PER_THREAD);
+
         for i in 0..OPS_PER_THREAD {
             keys.push(map.insert(i));
         }
-        keys
+
+        shuffle_keys(keys, thread_count)
     }
 
-    fn run(map: Arc<S>, keys: Arc<Self::SharedState>, _thread_id: usize) {
-        for &k in keys.iter() {
-            black_box(map.get(k));
+    fn run(map: Arc<S>, keys: Arc<Self::SharedState>, thread_id: usize) {
+        for i in 0..OPS_PER_THREAD {
+            black_box(map.get(keys[thread_id][i]));
         }
     }
 }
@@ -360,18 +379,20 @@ fn bench_concurrent_reads(c: &mut Criterion) {
 struct MixedWorkloadBenchmark;
 
 impl<S: ConcurrentMap> Benchmark<S> for MixedWorkloadBenchmark {
-    type SharedState = Vec<S::Key>;
+    type SharedState = Vec<Vec<S::Key>>;
 
     fn name() -> &'static str {
         "Mixed workload"
     }
 
-    fn setup(map: &S) -> Self::SharedState {
+    fn setup(map: &S, thread_count: usize) -> Self::SharedState {
         let mut keys = Vec::with_capacity(OPS_PER_THREAD);
+
         for i in 0..OPS_PER_THREAD {
             keys.push(map.insert(i));
         }
-        keys
+
+        shuffle_keys(keys, thread_count)
     }
 
     fn run(map: Arc<S>, keys: Arc<Self::SharedState>, thread_id: usize) {
@@ -379,7 +400,7 @@ impl<S: ConcurrentMap> Benchmark<S> for MixedWorkloadBenchmark {
             if i % 10 == 0 {
                 map.insert(thread_id * 1000 + i);
             } else {
-                black_box(map.get(keys[i]));
+                black_box(map.get(keys[thread_id][i]));
             }
         }
     }
@@ -396,23 +417,25 @@ fn bench_concurrent_mixed(c: &mut Criterion) {
 struct ConcurrentWritesBenchmark;
 
 impl<S: ConcurrentMap> Benchmark<S> for ConcurrentWritesBenchmark {
-    type SharedState = Vec<S::Key>;
+    type SharedState = Vec<Vec<S::Key>>;
 
     fn name() -> &'static str {
         "Concurrent writes"
     }
 
-    fn setup(map: &S) -> Self::SharedState {
+    fn setup(map: &S, thread_count: usize) -> Self::SharedState {
         let mut keys = Vec::with_capacity(OPS_PER_THREAD);
+
         for i in 0..OPS_PER_THREAD {
             keys.push(map.insert(i));
         }
-        keys
+
+        shuffle_keys(keys, thread_count)
     }
 
     fn run(map: Arc<S>, keys: Arc<Self::SharedState>, thread_id: usize) {
         for i in 0..OPS_PER_THREAD {
-            map.write(keys[i], thread_id * 1000 + i);
+            map.write(keys[thread_id][i], thread_id * 1000 + i);
         }
     }
 }
