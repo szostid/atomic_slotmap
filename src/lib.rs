@@ -498,12 +498,6 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     #[inline]
     #[must_use]
     pub fn get(&self, key: K) -> Option<SlotGuard<'_, K, V>> {
-        // if the key points to an unoccupied slot then
-        // it won't ever point to an occupied slot
-        if key.data().version().get() % 2 == 0 {
-            return None;
-        }
-
         SlotGuard::new(key, self)
     }
 
@@ -540,12 +534,6 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     #[must_use]
     #[cfg(not(loom))]
     pub fn get_owning(self: &Arc<Self>, key: K) -> Option<OwningSlotGuard<K, V>> {
-        // if the key points to an unoccupied slot then
-        // it won't ever point to an occupied slot
-        if key.data().version().get() % 2 == 0 {
-            return None;
-        }
-
         OwningSlotGuard::new(key, Arc::clone(self))
     }
 
