@@ -115,6 +115,7 @@ impl<V> AtomicSlotMap<DefaultKey, V> {
     /// ```
     #[inline]
     #[must_use]
+    #[cfg(not(loom))]
     pub const fn new() -> Self {
         Self::with_key()
     }
@@ -155,6 +156,7 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     /// ```
     #[inline]
     #[must_use]
+    #[cfg(not(loom))]
     pub const fn with_key() -> Self {
         Self {
             slots: AtomicVec::new(),
@@ -515,20 +517,6 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
         OwningSlotGuard::new(key, Arc::clone(self))
     }
 
-    /// Returns an owning slot guard (loom version, not associated)
-    #[inline]
-    #[must_use]
-    #[cfg(loom)]
-    pub fn get_owning(this: &Arc<Self>, key: K) -> Option<OwningSlotGuard<K, V>> {
-        // if the key points to an unoccupied slot then
-        // it won't ever point to an occupied slot
-        if key.data().version().get() % 2 == 0 {
-            return None;
-        }
-
-        OwningSlotGuard::new(key, Arc::clone(this))
-    }
-
     /// Pops an index from the free slot linked list. The returned index is guaranteed
     /// to be a valid index into `self.slots`, into a slot that is unoccupied
     #[inline]
@@ -618,6 +606,52 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
                 Err(current) => old_free_head = current,
             }
         }
+    }
+}
+
+#[cfg(loom)]
+impl<V> AtomicSlotMap<DefaultKey, V> {
+    /// Constructs a new, empty [`SlotMap`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use atomic_slotmap::*;
+    /// let mut sm: AtomicSlotMap<_, i32> = AtomicSlotMap::new();
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_key()
+    }
+}
+
+/// This contains the non-const versions of some of the methods that are not const on `#[cfg(loom)]`
+#[cfg(loom)]
+impl<K: Key, V> AtomicSlotMap<K, V> {
+    /// Constructs a new, empty [`AtomicSlotMap`] with a custom key type (loom version, non-const)
+    #[inline]
+    #[must_use]
+    pub fn with_key() -> Self {
+        Self {
+            slots: AtomicVec::new(),
+            free_head: AtomicU64::new(pack_free_head(0, SENTINEL)),
+            num_elems: AtomicU32::new(0),
+            _k: PhantomData,
+        }
+    }
+
+    /// Returns an owning slot guard (loom version, not associated)
+    #[inline]
+    #[must_use]
+    pub fn get_owning(this: &Arc<Self>, key: K) -> Option<OwningSlotGuard<K, V>> {
+        // if the key points to an unoccupied slot then
+        // it won't ever point to an occupied slot
+        if key.data().version().get() % 2 == 0 {
+            return None;
+        }
+
+        OwningSlotGuard::new(key, Arc::clone(this))
     }
 }
 
