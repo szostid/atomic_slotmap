@@ -198,7 +198,7 @@ fn check_lossy_methods() {
     assert!(cap2 >= 53);
 
     for i in 0..50 {
-        sm.insert(i);
+        let _ = sm.insert(i);
     }
 
     assert_eq!(sm.capacity(), cap2);

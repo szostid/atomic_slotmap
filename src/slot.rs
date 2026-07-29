@@ -6,7 +6,7 @@ use core::mem::MaybeUninit;
 /// Similar to [`std::sync::Arc`], the Slot has a maximum reference
 /// count cap to prevent leaked references from overflowing the
 /// reference count
-const MAX_REFCOUNT: u32 = 0xFFFFFF00;
+const MAX_REFCOUNT: u32 = 0xFF_FF_FF_00;
 
 /// A single slot in the atomic slotmap.
 ///
@@ -73,9 +73,7 @@ impl<T> Slot<T> {
         // new value, try to exchange it, and if it did changed, then we have to try
         // again. otherwise we're fine
         loop {
-            if refcount > MAX_REFCOUNT {
-                panic!("max refcount reached");
-            }
+            assert!(refcount <= MAX_REFCOUNT, "max refcount reached");
 
             if refcount == 0 {
                 return Err(false);
@@ -113,12 +111,10 @@ impl<T> Slot<T> {
         // https://doc.rust-lang.org/src/alloc/sync.rs.html#2376
         let old_count = self.ref_count.fetch_add(1, Ordering::Relaxed);
 
-        if old_count > MAX_REFCOUNT {
-            panic!("max refcount reached");
-        }
+        assert!(old_count <= MAX_REFCOUNT, "max refcount reached");
     }
 
-    /// Decrements ref_count for dropping a reference to the slot.
+    /// Decrements `ref_count` for dropping a reference to the slot.
     ///
     /// Returns whether the slot has no existing references and therefore
     /// should be dropped. When this function returns `true` it is guaranteed

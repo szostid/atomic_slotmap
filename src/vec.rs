@@ -3,7 +3,7 @@ use crate::{
     util::AtomicGetExclusive,
 };
 use alloc::alloc;
-use core::marker::PhantomData;
+use core::{convert::TryInto, marker::PhantomData};
 
 /// If running on loom, most sync types (atomics, cells)
 /// aren't primitives that are safe to be zeroed anymore.
@@ -77,7 +77,7 @@ impl<T: ZeroedOrDefault> AtomicVec<T> {
         // unallocated but index is incremented. this is unavoidable.
         let idx = self.len.fetch_add(1, Ordering::Relaxed);
 
-        let (chunk_idx, _) = self.get_location(idx);
+        let (chunk_idx, _) = Self::get_location(idx);
 
         self.ensure_chunk_exists(chunk_idx);
 
@@ -94,7 +94,7 @@ impl<T: ZeroedOrDefault> AtomicVec<T> {
             return None;
         }
 
-        let (chunk_idx, offset) = self.get_location(idx);
+        let (chunk_idx, offset) = Self::get_location(idx);
 
         // we need to wait for the chunk. a push call that needs to allocate
         // a new chunk will, for a short time, increment the length but not
@@ -135,7 +135,7 @@ impl<T: ZeroedOrDefault> AtomicVec<T> {
     /// # Safety
     /// Only safe to call if `idx` is contained within the vector.
     pub unsafe fn get_unchecked_ptr(&self, idx: u32) -> *mut T {
-        let (chunk_idx, offset) = self.get_location(idx);
+        let (chunk_idx, offset) = Self::get_location(idx);
 
         // we need to wait for the chunk. a push call that needs to allocate
         // a new chunk will, for a short time, increment the length but not
@@ -149,6 +149,10 @@ impl<T: ZeroedOrDefault> AtomicVec<T> {
     }
 
     /// Reserves the spaced for `additional` additional elements in the vector.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the capacity overflows a u32.
     pub fn reserve(&self, additional: usize) {
         let len = self.len.load(Ordering::Relaxed);
         let target_cap = len as usize + additional;
@@ -157,7 +161,11 @@ impl<T: ZeroedOrDefault> AtomicVec<T> {
             return;
         }
 
-        let (max_chunk, _) = self.get_location((target_cap - 1) as u32);
+        let (max_chunk, _) = Self::get_location(
+            (target_cap - 1)
+                .try_into()
+                .expect("capacity has overflowed the maximum 32-bit limit"),
+        );
 
         // preallocate all required chunks
         for i in 0..=max_chunk {
@@ -177,13 +185,14 @@ impl<T: ZeroedOrDefault> AtomicVec<T> {
             // relaxed is fine, not much will happen if we don't count a
             // newly initialized chunk
             let ptr = chunk.load(Ordering::Relaxed);
-            if !ptr.is_null() {
-                total_cap += 32_usize << (i * 2);
-            } else {
+
+            if ptr.is_null() {
                 // chunks are allocated in order, so if we see the first
                 // null value then all consecutive chunks are null
                 break;
             }
+
+            total_cap += 32_usize << (i * 2);
         }
         total_cap
     }
@@ -201,7 +210,7 @@ impl<T: ZeroedOrDefault> AtomicVec<T> {
 
     /// Returns the `(chunk, offset)` of the given index.
     #[inline]
-    fn get_location(&self, idx: u32) -> (usize, usize) {
+    fn get_location(idx: u32) -> (usize, usize) {
         // We want to map `idx` to a chunk `k` where sizes grow as 32 * 4^k.
         // The cumulative capacity before chunk k is: Sum(32 * 4^i) = 32 * (4^k - 1) / 3
         // We solve for k:
@@ -214,6 +223,11 @@ impl<T: ZeroedOrDefault> AtomicVec<T> {
         let chunk_idx = (log2 / 2) as usize;
 
         // These are the start indices of subsequent chunks
+        #[expect(
+            clippy::unreadable_literal,
+            clippy::items_after_statements,
+            reason = "lookup table"
+        )]
         const STARTS: [u32; 15] = [
             0,          // size: 32,         starts at 0
             32,         // size: 128,        starts at 32         + 0         = 32
@@ -254,7 +268,7 @@ impl<T: ZeroedOrDefault> AtomicVec<T> {
             // we alloc_zeroed because this is mainly used by the `push_zeroed` call. we
             // want to ensure that whatever could possibly be visible to readers is always
             // zeroed (or written to, in a safe manner, by the user)
-            let new_ptr = alloc::alloc_zeroed(layout) as *mut T;
+            let new_ptr = alloc::alloc_zeroed(layout).cast::<T>();
 
             #[cfg(loom)]
             {
@@ -277,7 +291,7 @@ impl<T: ZeroedOrDefault> AtomicVec<T> {
                 Err(existing) => {
                     // the chunk was already allocated somewhere else. we need to
                     // deallocate the current pointer and return the existing chunk
-                    alloc::dealloc(new_ptr as *mut u8, layout);
+                    alloc::dealloc(new_ptr.cast::<u8>(), layout);
                     existing
                 }
             }
@@ -308,7 +322,7 @@ impl<T: ZeroedOrDefault> Drop for AtomicVec<T> {
 
         if core::mem::needs_drop::<T>() {
             for i in 0..self.len.get() {
-                let (chunk_idx, offset) = self.get_location(i);
+                let (chunk_idx, offset) = Self::get_location(i);
 
                 let chunk_ptr = self.chunks[chunk_idx].get();
 
@@ -331,7 +345,7 @@ impl<T: ZeroedOrDefault> Drop for AtomicVec<T> {
                 let layout = alloc::Layout::array::<T>(cap).unwrap();
 
                 unsafe {
-                    alloc::dealloc(ptr as *mut u8, layout);
+                    alloc::dealloc(ptr.cast::<u8>(), layout);
                 }
             }
         }

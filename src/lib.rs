@@ -1,4 +1,4 @@
-//! # atomic_slotmap
+//! # `atomic_slotmap`
 //!
 //! This library provies an extension to the [slotmap] crate, adding an atomic
 //! slotmap which can be modified without a mutable reference.
@@ -16,9 +16,13 @@
 )]
 #![deny(missing_docs)]
 #![deny(clippy::all)]
+#![warn(clippy::pedantic, clippy::nursery, clippy::cargo)]
 #![allow(
     clippy::while_let_on_iterator, // Style differences.
-    clippy::unnecessary_map_or // Too high MSRV.
+    clippy::unnecessary_map_or, // Too high MSRV.
+    clippy::cast_lossless, // cmon
+    clippy::option_if_let_else, // kinda unreadable
+    clippy::missing_const_for_fn, // usually not applicable since most of the functions need allocations to happen in the first place
 )]
 
 extern crate alloc;
@@ -75,6 +79,7 @@ const fn pack_free_head(tag: u32, index: u32) -> u64 {
 #[inline]
 #[must_use]
 const fn unpack_free_head(packed: u64) -> (u32, u32) {
+    #[expect(clippy::cast_possible_truncation, reason = "intentional")]
     ((packed >> 32) as u32, packed as u32)
 }
 
@@ -108,6 +113,8 @@ impl<V> AtomicSlotMap<DefaultKey, V> {
     /// # use atomic_slotmap::*;
     /// let mut sm: AtomicSlotMap<_, i32> = AtomicSlotMap::new();
     /// ```
+    #[inline]
+    #[must_use]
     pub const fn new() -> Self {
         Self::with_key()
     }
@@ -125,6 +132,8 @@ impl<V> AtomicSlotMap<DefaultKey, V> {
     /// # use atomic_slotmap::*;
     /// let mut sm: AtomicSlotMap<_, i32> = AtomicSlotMap::with_capacity(10);
     /// ```
+    #[inline]
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self::with_capacity_and_key(capacity)
     }
@@ -144,6 +153,8 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     /// }
     /// let mut positions: AtomicSlotMap<PositionKey, i32> = AtomicSlotMap::with_key();
     /// ```
+    #[inline]
+    #[must_use]
     pub const fn with_key() -> Self {
         Self {
             slots: AtomicVec::new(),
@@ -178,6 +189,8 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     /// // AtomicHashMap allocates chunks starting from `32` and then scales by 4
     /// assert_eq!(messages.capacity(), 32);
     /// ```
+    #[inline]
+    #[must_use]
     pub fn with_capacity_and_key(capacity: usize) -> Self {
         Self {
             slots: AtomicVec::with_capacity(capacity),
@@ -202,6 +215,8 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     /// sm.remove(key);
     /// assert_eq!(sm.contains_key(key), false);
     /// ```
+    #[inline]
+    #[must_use]
     pub fn contains_key(&self, key: K) -> bool {
         let kd = key.data();
         self.slots.get(kd.idx()).map_or(false, |slot| {
@@ -226,7 +241,8 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     /// let guard = sm.get(key);
     /// assert_eq!(guard.as_deref(), Some(&42));
     /// ```
-    #[inline(always)]
+    #[inline]
+    #[must_use = "dropping the key to the element will leak it"]
     pub fn insert(&self, value: V) -> K {
         let Ok(key) = self.try_insert_with_key::<_, Infallible>(move |_| Ok(value));
 
@@ -251,7 +267,8 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     /// let guard = sm.get(key);
     /// assert_eq!(guard.as_deref(), Some(&(key, 20)));
     /// ```
-    #[inline(always)]
+    #[inline]
+    #[must_use = "dropping the key to the element will leak it"]
     pub fn insert_with_key<F>(&self, f: F) -> K
     where
         F: FnOnce(K) -> V,
@@ -271,6 +288,10 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     ///
     /// Panics if the slot map is full.
     ///
+    /// # Errors
+    ///
+    /// Returns an error only if the insertion closure returns an error
+    ///
     /// # Examples
     ///
     /// ```
@@ -281,6 +302,7 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     /// let guard = sm.get(key);
     /// assert_eq!(guard.as_deref(), Some(&(key, 20)));
     /// ```
+    #[inline]
     pub fn try_insert_with_key<F, E>(&self, f: F) -> Result<K, E>
     where
         F: FnOnce(K) -> Result<V, E>,
@@ -359,6 +381,7 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     ///
     /// assert_eq!(sm.remove(key), false);
     /// ```
+    #[inline]
     pub fn remove(&self, key: K) -> bool {
         let kd = key.data();
 
@@ -438,6 +461,8 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     /// assert_eq!(guard.as_deref(), None);
     ///
     /// ```
+    #[inline]
+    #[must_use]
     pub fn get(&self, key: K) -> Option<SlotGuard<'_, K, V>> {
         // if the key points to an unoccupied slot then
         // it won't ever point to an occupied slot
@@ -477,6 +502,8 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     /// // reference to it, and so it is still accessible
     /// assert_eq!(guard.as_deref(), Some(&"bar"));
     /// ```
+    #[inline]
+    #[must_use]
     #[cfg(not(loom))]
     pub fn get_owning(self: &Arc<Self>, key: K) -> Option<OwningSlotGuard<K, V>> {
         // if the key points to an unoccupied slot then
@@ -489,6 +516,8 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     }
 
     /// Returns an owning slot guard (loom version, not associated)
+    #[inline]
+    #[must_use]
     #[cfg(loom)]
     pub fn get_owning(this: &Arc<Self>, key: K) -> Option<OwningSlotGuard<K, V>> {
         // if the key points to an unoccupied slot then
@@ -502,6 +531,8 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
 
     /// Pops an index from the free slot linked list. The returned index is guaranteed
     /// to be a valid index into `self.slots`, into a slot that is unoccupied
+    #[inline]
+    #[must_use]
     fn pop_free_index(&self) -> Option<u32> {
         let mut old_free_head = self.free_head.load(Ordering::Acquire);
 
@@ -560,6 +591,7 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     /// # Safety
     /// The index must be a valid index into a slot. The slot at
     /// the index must be unoccupied and have no referents.
+    #[inline]
     unsafe fn push_free_index(&self, idx: u32) {
         let slot = unsafe { self.slots.get_unchecked(idx) };
 
@@ -604,7 +636,7 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     ///
     /// # Panics
     ///
-    /// Panics if the new allocation size overflows [`usize`].
+    /// Panics if the new allocation size overflows [`u32`].
     ///
     /// # Examples
     ///
@@ -686,6 +718,8 @@ impl<K: Key, V> AtomicSlotMap<K, V> {
     ///
     /// assert_eq!(sm.capacity(), 32 + 128);
     /// ```
+    #[inline]
+    #[must_use]
     pub fn capacity(&self) -> usize {
         self.slots.capacity()
     }

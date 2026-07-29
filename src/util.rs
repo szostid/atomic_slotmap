@@ -28,8 +28,14 @@ impl KeyDataRead for KeyData {
         let value = self.as_ffi();
         let version = (value >> 32) | 1; // Ensure version is odd.
 
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the value was previously shifted 32 bits to the right so its impossible for any of the 32 high bits to be set"
+        )]
         // SAFETY: we or'ed the version with 1 so it'll never be zero
-        unsafe { NonZeroU32::new_unchecked(version as u32) }
+        unsafe {
+            NonZeroU32::new_unchecked(version as u32)
+        }
     }
 
     #[inline]

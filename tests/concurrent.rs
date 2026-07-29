@@ -94,12 +94,12 @@ fn test_aba_free_list() {
 
         let sm_thread1 = sm.clone();
         let t1 = thread::spawn(move || {
-            sm_thread1.insert(3);
+            let _ = sm_thread1.insert(3);
         });
 
         let sm_thread2 = sm.clone();
         let t2 = thread::spawn(move || {
-            sm_thread2.insert(4);
+            let _ = sm_thread2.insert(4);
         });
 
         t1.join().unwrap();

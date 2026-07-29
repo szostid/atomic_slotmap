@@ -1,3 +1,4 @@
+#![allow(clippy::incompatible_msrv, reason = "benchmark")]
 use atomic_slotmap::AtomicSlotMap;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use slotmap::{DefaultKey, SlotMap};

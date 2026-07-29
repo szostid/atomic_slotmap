@@ -9,7 +9,7 @@ use slotmap::Key;
 /// (meaning that it isn't tied to the slotmap by lifetime)
 pub struct OwningSlotGuard<K: Key, V> {
     /// We cannot keep &V or &Slot<V> to satisfy the borrowing rules
-    /// when dropping the slot - calling drop_in_place on the inner
+    /// when dropping the slot - calling `drop_in_place` on the inner
     /// value of `Slot<V>` is unsafe if we have a reference to either
     /// `&V` or `&Slot<V>`, so that would trigger MIRI. We can, however,
     /// keep a raw pointer to *mut V.
@@ -49,7 +49,7 @@ impl<K: Key, V> OwningSlotGuard<K, V> {
         // the slot is occupied, so its safe to read the value of the slot
         let value = unsafe { (*slot.data_ptr()).as_ptr() };
 
-        Some(Self { key, value, map })
+        Some(Self { value, key, map })
     }
 
     /// Returns the key of the value that this slot guard guards.

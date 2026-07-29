@@ -14,6 +14,7 @@ use slotmap::{Key, KeyData};
 /// that during the iteration, free slots that were
 /// already checked might become used up and therefore
 /// they will be skipped during iteration.
+#[must_use = "iterators are lazy and do nothing unless consumed"]
 #[allow(missing_debug_implementations)]
 pub struct LossyIter<'a, K: Key, V> {
     map: &'a AtomicSlotMap<K, V>,
@@ -29,10 +30,7 @@ impl<'a, K: Key, V> LossyIter<'a, K, V> {
     }
 }
 
-impl<'a, K: Key, V> Iterator for LossyIter<'a, K, V>
-where
-    K: From<KeyData>,
-{
+impl<'a, K: Key, V> Iterator for LossyIter<'a, K, V> {
     type Item = (K, SlotGuard<'a, K, V>);
 
     fn next(&mut self) -> Option<Self::Item> {
